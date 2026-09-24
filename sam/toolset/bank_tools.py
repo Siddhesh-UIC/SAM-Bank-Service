@@ -6,7 +6,8 @@ SAM STR protocol (same as the workshop travel_planner.py):
   --schema              → print JSON schema for all tools, then exit
   <runner_args.json>    → read args, execute tool, write result to result_file path
 
-Base URL defaults to http://localhost:8000; override with the BANK_API_URL env var.
+Base URL defaults to http://127.0.0.1:8000; override with the BANK_API_URL env var.
+(127.0.0.1, not localhost: on Windows localhost tries IPv6 first and Docker Desktop stalls ~20s on it.)
 """
 
 import json
@@ -16,7 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-BASE_URL = os.environ.get("BANK_API_URL", "http://localhost:8000").rstrip("/")
+BASE_URL = os.environ.get("BANK_API_URL", "http://127.0.0.1:8000").rstrip("/")
 
 PHONE = {"type": "string", "description": "Caller phone number in E.164 format, e.g. +6281234567801"}
 

@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://bank:bank123@localhost:5432/bank")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://bank:bank123@127.0.0.1:5432/bank")
 STATIC = Path(__file__).parent / "static"
 
 app = FastAPI(

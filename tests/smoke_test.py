@@ -5,7 +5,7 @@ import os
 import urllib.error
 import urllib.request
 
-BASE = os.environ.get("BANK_API_URL", "http://localhost:8000")
+BASE = os.environ.get("BANK_API_URL", "http://127.0.0.1:8000")
 PHONE = "%2B6281234567808"  # Rina Kartika Sari, URL-encoded +
 
 
