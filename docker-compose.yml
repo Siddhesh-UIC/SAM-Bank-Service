@@ -16,5 +16,16 @@ services:
       interval: 3s
       retries: 20
 
+  api:
+    build: ./api
+    container_name: sam-bank-api
+    environment:
+      DATABASE_URL: postgresql://bank:bank123@db:5432/bank
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   pgdata:
