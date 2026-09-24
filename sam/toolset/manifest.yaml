@@ -1,0 +1,22 @@
+version: 1
+tools:
+  get_customer:
+    runtime: python
+    executable: ./bank_tools.py
+    timeout_seconds: 15
+  get_balances:
+    runtime: python
+    executable: ./bank_tools.py
+    timeout_seconds: 15
+  get_recent_transactions:
+    runtime: python
+    executable: ./bank_tools.py
+    timeout_seconds: 15
+  get_cards:
+    runtime: python
+    executable: ./bank_tools.py
+    timeout_seconds: 15
+  block_card:
+    runtime: python
+    executable: ./bank_tools.py
+    timeout_seconds: 15
