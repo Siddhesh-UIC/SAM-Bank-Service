@@ -9,8 +9,8 @@ BASE = os.environ.get("BANK_API_URL", "http://localhost:8000")
 PHONE = "%2B6281234567808"  # Rina Kartika Sari, URL-encoded +
 
 
-def call(path, body=None):
-    req = urllib.request.Request(BASE + path, method="POST" if body else "GET",
+def call(path, body=None, method=None):
+    req = urllib.request.Request(BASE + path, method=method or ("POST" if body else "GET"),
                                  data=json.dumps(body).encode() if body else None,
                                  headers={"Content-Type": "application/json"})
     try:
@@ -43,5 +43,30 @@ assert cards[0]["card_status"] == "BLOCKED"
 
 assert call("/admin/tables/customers")[0] == 200
 assert call("/admin/tables/pg_shadow")[0] == 404
+
+# Admin add/delete: a posted transaction moves the balance, deleting it moves it back.
+def balance():
+    return call(f"/customers/by-phone/{PHONE}/accounts")[1][0]["balance"]
+
+before = balance()
+status, row = call("/admin/tables/transactions", {"account_no": "1230000011", "description": "Test",
+                                                  "channel": "ATM", "amount": "-100000"})
+assert status == 200, row
+assert balance() == before - 100000
+assert call(f"/admin/tables/transactions/{row['id']}", method="DELETE")[0] == 200
+assert balance() == before
+assert call("/admin/tables/transactions", {"account_no": "0000000000", "description": "x",
+                                           "channel": "ATM", "amount": "1"})[0] == 400
+
+status, cust = call("/admin/tables/customers", {"cif": "CIFTEST", "full_name": "Uji Coba", "phone": "+6280000000000",
+                                                "date_of_birth": "2000-01-01", "city": "Bogor", "pin": "111111"})
+assert status == 200, cust
+assert call("/admin/tables/customers", {"cif": "CIFTEST", "full_name": "Dup", "phone": "+6280000000001",
+                                        "date_of_birth": "2000-01-01", "city": "Bogor", "pin": "111111"})[0] == 400
+assert call("/admin/tables/accounts", {"account_no": "9990000001", "customer_id": str(cust["id"]), "product": "TABUNGAN",
+                                       "balance": "500000", "status": "ACTIVE", "opened_at": "2026-01-01"})[0] == 200
+assert call(f"/admin/tables/customers/{cust['id']}", method="DELETE")[0] == 200  # cascades to the account
+assert call("/customers/by-phone/%2B6280000000000")[0] == 404
+assert call(f"/admin/tables/customers/{cust['id']}", method="DELETE")[0] == 404
 
 print("smoke test passed")

@@ -5,6 +5,7 @@ plus a read-only admin view of the tables for the validation UI.
 """
 
 import os
+import re
 from datetime import date
 from pathlib import Path
 
@@ -97,7 +98,7 @@ def block_card(req: BlockCardRequest):
     return row
 
 
-# ── Validation UI (not for agents) ──────────────────────────────────────────
+# ── Validation UI (not for agents; hidden from the OpenAPI spec) ────────────
 
 ADMIN_TABLES = {
     "customers": "SELECT id, cif, full_name, phone, email, date_of_birth, city, created_at FROM customers ORDER BY id",
@@ -109,11 +110,84 @@ ADMIN_TABLES = {
 }
 
 
+# Add-record forms for testing: field name → input type (list = dropdown options).
+ADMIN_FORMS = {
+    "customers": {"cif": "text", "full_name": "text", "phone": "text", "email": "text",
+                  "date_of_birth": "date", "city": "text", "pin": "text"},
+    "accounts": {"account_no": "text", "customer_id": "number", "product": ["TABUNGAN", "GIRO", "DEPOSITO"],
+                 "balance": "number", "status": ["ACTIVE", "DORMANT", "CLOSED"], "opened_at": "date"},
+    "transactions": {"account_no": "text", "description": "text",
+                     "channel": ["ATM", "QRIS", "TRANSFER", "EDC", "MOBILE", "TELLER"], "amount": "number"},
+    "cards": {"customer_id": "number", "account_id": "number", "card_type": ["DEBIT", "CREDIT"],
+              "network": ["GPN", "VISA", "MASTERCARD"], "card_last4": "text", "expiry": "text",
+              "status": ["ACTIVE", "BLOCKED"]},
+}
+
+ADMIN_INSERTS = {
+    "customers": "INSERT INTO customers (cif, full_name, phone, email, date_of_birth, city, pin_hash) "
+                 "VALUES (%(cif)s, %(full_name)s, %(phone)s, %(email)s, %(date_of_birth)s, %(city)s, "
+                 "crypt(%(pin)s, gen_salt('bf'))) RETURNING id",
+    "accounts": "INSERT INTO accounts (account_no, customer_id, product, balance, status, opened_at) "
+                "VALUES (%(account_no)s, %(customer_id)s, %(product)s, %(balance)s, %(status)s, %(opened_at)s) RETURNING id",
+    # Posting a transaction moves the balance too, so balances stay consistent.
+    "transactions": "WITH a AS (UPDATE accounts SET balance = balance + %(amount)s::numeric "
+                    "WHERE account_no = %(account_no)s RETURNING id) "
+                    "INSERT INTO transactions (account_id, posted_at, description, channel, amount) "
+                    "SELECT id, now(), %(description)s, %(channel)s, %(amount)s::numeric FROM a RETURNING id",
+    "cards": "INSERT INTO cards (customer_id, account_id, card_type, network, card_last4, expiry, status) "
+             "VALUES (%(customer_id)s, %(account_id)s, %(card_type)s, %(network)s, %(card_last4)s, %(expiry)s, "
+             "%(status)s) RETURNING id",
+}
+
+ADMIN_DELETES = {
+    "customers": "DELETE FROM customers WHERE id = %s RETURNING id",  # cascades to accounts, cards, transactions
+    "accounts": "DELETE FROM accounts WHERE id = %s RETURNING id",
+    "transactions": "WITH t AS (DELETE FROM transactions WHERE id = %s RETURNING account_id, amount) "
+                    "UPDATE accounts a SET balance = a.balance - t.amount FROM t WHERE a.id = t.account_id RETURNING a.id",
+    "cards": "DELETE FROM cards WHERE id = %s RETURNING id",
+    "card_block_requests": "DELETE FROM card_block_requests WHERE id = %s RETURNING id",
+}
+
+
+def admin_write(sql: str, params) -> list[dict]:
+    try:
+        return query(sql, params)
+    except psycopg.Error as e:  # constraint violations etc. → readable message in the UI
+        raise HTTPException(400, e.diag.message_primary or str(e))
+
+
 @app.get("/admin/tables/{name}", include_in_schema=False)
 def admin_table(name: str):
     if name not in ADMIN_TABLES:
         raise HTTPException(404, "UNKNOWN_TABLE")
     return query(ADMIN_TABLES[name])
+
+
+@app.get("/admin/forms", include_in_schema=False)
+def admin_forms():
+    return {"forms": ADMIN_FORMS, "deletable": list(ADMIN_DELETES)}
+
+
+@app.post("/admin/tables/{name}", include_in_schema=False)
+def admin_add(name: str, body: dict[str, str | int | float | None]):
+    if name not in ADMIN_INSERTS:
+        raise HTTPException(404, "UNKNOWN_TABLE")
+    params = {f: (body.get(f) if body.get(f) != "" else None) for f in ADMIN_FORMS[name]}
+    if name == "customers" and not re.fullmatch(r"\d{6}", str(params["pin"] or "")):
+        raise HTTPException(400, "PIN must be 6 digits")
+    rows = admin_write(ADMIN_INSERTS[name], params)
+    if not rows:
+        raise HTTPException(400, "account_no not found")  # only the transactions insert can match nothing
+    return rows[0]
+
+
+@app.delete("/admin/tables/{name}/{row_id}", include_in_schema=False)
+def admin_delete(name: str, row_id: int):
+    if name not in ADMIN_DELETES:
+        raise HTTPException(404, "UNKNOWN_TABLE")
+    if not admin_write(ADMIN_DELETES[name], (row_id,)):
+        raise HTTPException(404, "ROW_NOT_FOUND")
+    return {"deleted": row_id}
 
 
 @app.get("/", include_in_schema=False)

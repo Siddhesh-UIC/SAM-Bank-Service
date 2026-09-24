@@ -18,8 +18,8 @@ CREATE TABLE customers (
 CREATE TABLE accounts (
     id          SERIAL PRIMARY KEY,
     account_no  TEXT UNIQUE NOT NULL,
-    customer_id INT NOT NULL REFERENCES customers(id),
-    product     TEXT NOT NULL CHECK (product IN ('TABUNGAN', 'GIRO', 'DEPOSITO')),
+    customer_id INT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    product    TEXT NOT NULL CHECK (product IN ('TABUNGAN', 'GIRO', 'DEPOSITO')),
     currency    TEXT NOT NULL DEFAULT 'IDR',
     balance     NUMERIC(18,2) NOT NULL,
     status      TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'DORMANT', 'CLOSED')),
@@ -28,7 +28,7 @@ CREATE TABLE accounts (
 
 CREATE TABLE transactions (
     id          BIGSERIAL PRIMARY KEY,
-    account_id  INT NOT NULL REFERENCES accounts(id),
+    account_id  INT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     posted_at   TIMESTAMPTZ NOT NULL,
     description TEXT NOT NULL,
     channel     TEXT NOT NULL,                   -- ATM, QRIS, TRANSFER, EDC, MOBILE, TELLER
@@ -38,8 +38,8 @@ CREATE INDEX ON transactions (account_id, posted_at DESC);
 
 CREATE TABLE cards (
     id           SERIAL PRIMARY KEY,
-    customer_id  INT NOT NULL REFERENCES customers(id),
-    account_id   INT REFERENCES accounts(id),
+    customer_id  INT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    account_id   INT REFERENCES accounts(id) ON DELETE SET NULL,
     card_type    TEXT NOT NULL CHECK (card_type IN ('DEBIT', 'CREDIT')),
     network      TEXT NOT NULL,                  -- GPN, VISA, MASTERCARD
     card_last4   TEXT NOT NULL,
@@ -53,7 +53,7 @@ CREATE TABLE cards (
 CREATE TABLE card_block_requests (
     id         SERIAL PRIMARY KEY,
     reference  TEXT UNIQUE NOT NULL,
-    card_id    INT NOT NULL REFERENCES cards(id),
+    card_id    INT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
     reason     TEXT NOT NULL,
     channel    TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
