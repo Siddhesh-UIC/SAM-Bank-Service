@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAM Bank Data</title>
+<style>
+  :root { --bg:#f6f7f9; --panel:#fff; --text:#1c2230; --muted:#6b7385; --line:#e3e6ec; --accent:#b4121b;
+          --ok:#1d7a46; --ok-bg:#e3f4ea; --bad:#a3141b; --bad-bg:#fbe5e6; --warn:#8a5a00; --warn-bg:#fff2d6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12151b; --panel:#1b1f27; --text:#e6e8ee; --muted:#98a0b3; --line:#2b313d; --accent:#ff5a61;
+            --ok:#6fd49b; --ok-bg:#16301f; --bad:#ff8a8f; --bad-bg:#3a1a1c; --warn:#ffc861; --warn-bg:#352a12; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:20px 24px 0; display:flex; flex-wrap:wrap; align-items:baseline; gap:8px 16px; }
+  h1 { margin:0; font-size:18px; } h1 span { color:var(--accent); }
+  header p { margin:0; color:var(--muted); }
+  header a { color:var(--muted); margin-left:auto; }
+  nav { display:flex; gap:4px; padding:16px 24px 0; overflow-x:auto; border-bottom:1px solid var(--line); }
+  nav button { border:0; background:none; color:var(--muted); padding:8px 12px; font:inherit; cursor:pointer;
+               border-bottom:2px solid transparent; white-space:nowrap; }
+  nav button[aria-selected=true] { color:var(--text); border-color:var(--accent); font-weight:600; }
+  .bar { display:flex; gap:8px; align-items:center; padding:12px 24px; }
+  .bar input { flex:1; max-width:320px; padding:7px 10px; border:1px solid var(--line); border-radius:6px;
+               background:var(--panel); color:var(--text); font:inherit; }
+  .bar button { padding:7px 12px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--text); cursor:pointer; font:inherit; }
+  .bar small { color:var(--muted); }
+  main { padding:0 24px 24px; }
+  .wrap { overflow-x:auto; background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+  table { border-collapse:collapse; width:100%; }
+  th, td { padding:8px 12px; text-align:left; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { position:sticky; top:0; background:var(--panel); color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.03em; }
+  tr:last-child td { border-bottom:0; }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  td.neg { color:var(--bad); }
+  .badge { padding:2px 8px; border-radius:99px; font-size:12px; font-weight:600; }
+  .ACTIVE { color:var(--ok); background:var(--ok-bg); } .BLOCKED, .CLOSED { color:var(--bad); background:var(--bad-bg); }
+  .DORMANT { color:var(--warn); background:var(--warn-bg); }
+  .empty { padding:24px; color:var(--muted); }
+  @media (max-width:600px) { header, nav, .bar, main { padding-left:16px; padding-right:16px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1><span>●</span> SAM Bank Service</h1>
+  <p>Mock core-banking data (read-only view)</p>
+  <a href="/docs">API docs →</a>
+</header>
+<nav role="tablist"></nav>
+<div class="bar">
+  <input id="filter" type="search" placeholder="Filter rows…" aria-label="Filter rows">
+  <button id="refresh">Refresh</button>
+  <small id="count"></small>
+</div>
+<main><div class="wrap"><table><thead></thead><tbody></tbody></table></div></main>
+<script>
+const TABLES = ["customers", "accounts", "transactions", "cards", "card_block_requests"];
+const MONEY = new Set(["balance", "amount"]);
+const STATUS = new Set(["status"]);
+const idr = new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 });
+const nav = document.querySelector("nav"), thead = document.querySelector("thead"), tbody = document.querySelector("tbody");
+const filter = document.getElementById("filter"), count = document.getElementById("count");
+let current = TABLES[0], rows = [];
+
+for (const t of TABLES) {
+  const b = document.createElement("button");
+  b.textContent = t.replaceAll("_", " "); b.role = "tab"; b.onclick = () => load(t);
+  nav.append(b);
+}
+
+function cell(col, v) {
+  const td = document.createElement("td");
+  if (v === null) { td.textContent = "—"; return td; }
+  if (MONEY.has(col)) { td.className = "num" + (v < 0 ? " neg" : ""); td.textContent = idr.format(v); return td; }
+  if (STATUS.has(col)) { const s = document.createElement("span"); s.className = "badge " + v; s.textContent = v; td.append(s); return td; }
+  if (/_at$/.test(col)) { td.textContent = new Date(v).toLocaleString("id-ID"); return td; }
+  td.textContent = v; return td;
+}
+
+function render() {
+  const q = filter.value.toLowerCase();
+  const shown = q ? rows.filter(r => Object.values(r).join(" ").toLowerCase().includes(q)) : rows;
+  const cols = rows.length ? Object.keys(rows[0]) : [];
+  const head = document.createElement("tr");
+  for (const c of cols) head.append(Object.assign(document.createElement("th"), { textContent: c }));
+  thead.replaceChildren(head);
+  tbody.replaceChildren(...shown.map(r => { const tr = document.createElement("tr"); for (const c of cols) tr.append(cell(c, r[c])); return tr; }));
+  if (!shown.length) tbody.innerHTML = `<tr><td class="empty">No rows</td></tr>`;
+  count.textContent = `${shown.length} of ${rows.length} rows`;
+}
+
+async function load(t) {
+  current = t;
+  for (const b of nav.children) b.setAttribute("aria-selected", b.textContent === t.replaceAll("_", " "));
+  const res = await fetch(`/admin/tables/${t}`);
+  rows = res.ok ? await res.json() : [];
+  render();
+}
+
+filter.oninput = render;
+document.getElementById("refresh").onclick = () => load(current);
+load(current);
+</script>
+</body>
+</html>
