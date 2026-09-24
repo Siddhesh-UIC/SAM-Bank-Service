@@ -21,8 +21,8 @@
   nav button { border:0; background:none; color:var(--muted); padding:8px 12px; font:inherit; cursor:pointer;
                border-bottom:2px solid transparent; white-space:nowrap; }
   nav button[aria-selected=true] { color:var(--text); border-color:var(--accent); font-weight:600; }
-  .bar { display:flex; gap:8px; align-items:center; padding:12px 24px; }
-  .bar input { flex:1; max-width:320px; padding:7px 10px; border:1px solid var(--line); border-radius:6px;
+  .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:12px 24px; }
+  .bar input { flex:1 1 180px; max-width:320px; padding:7px 10px; border:1px solid var(--line); border-radius:6px;
                background:var(--panel); color:var(--text); font:inherit; }
   .bar button { padding:7px 12px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--text); cursor:pointer; font:inherit; }
   .bar small { color:var(--muted); }
@@ -36,7 +36,10 @@
   td.neg { color:var(--bad); }
   .badge { padding:2px 8px; border-radius:99px; font-size:12px; font-weight:600; }
   .ACTIVE { color:var(--ok); background:var(--ok-bg); } .BLOCKED, .CLOSED { color:var(--bad); background:var(--bad-bg); }
-  .DORMANT { color:var(--warn); background:var(--warn-bg); }
+  .DORMANT, .LOCKED { color:var(--warn); background:var(--warn-bg); }
+  .SUCCESS { color:var(--ok); background:var(--ok-bg); } .FAILED { color:var(--bad); background:var(--bad-bg); }
+  .API { color:#fff; background:#3b6fd8; } .DB { color:#fff; background:#7a4fc9; }
+  td.code { font-family:ui-monospace, Consolas, monospace; font-size:12px; white-space:normal; min-width:420px; word-break:break-word; }
   .empty { padding:24px; color:var(--muted); }
   #add[hidden] { display:none; }
   #add { margin:0 24px 12px; padding:12px; background:var(--panel); border:1px solid var(--line); border-radius:8px;
@@ -66,9 +69,9 @@
 <form id="add" hidden></form>
 <main><div class="wrap"><table><thead></thead><tbody></tbody></table></div></main>
 <script>
-const TABLES = ["customers", "accounts", "transactions", "cards", "card_block_requests"];
+const TABLES = ["call_log", "customers", "accounts", "transactions", "cards", "card_block_requests", "verification_attempts"];
 const MONEY = new Set(["balance", "amount"]);
-const STATUS = new Set(["status"]);
+const STATUS = new Set(["status", "outcome", "source"]);
 const idr = new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 });
 const nav = document.querySelector("nav"), thead = document.querySelector("thead"), tbody = document.querySelector("tbody");
 const filter = document.getElementById("filter"), count = document.getElementById("count");
@@ -138,6 +141,8 @@ function cell(col, v) {
   if (MONEY.has(col)) { td.className = "num" + (v < 0 ? " neg" : ""); td.textContent = idr.format(v); return td; }
   if (STATUS.has(col)) { const s = document.createElement("span"); s.className = "badge " + v; s.textContent = v; td.append(s); return td; }
   if (/_at$/.test(col)) { td.textContent = new Date(v).toLocaleString("id-ID"); return td; }
+  if (col === "result") { td.className = /^(ERROR|[45]\d\d)/.test(v) ? "neg" : ""; }
+  if (col === "request") { td.className = "code"; }
   td.textContent = v; return td;
 }
 
@@ -167,7 +172,7 @@ function render() {
 async function load(t) {
   if (t !== current) { current = t; buildForm(); }
   for (const b of nav.children) b.setAttribute("aria-selected", b.textContent === t.replaceAll("_", " "));
-  const res = await fetch(`/admin/tables/${t}`);
+  const res = await fetch(t === "call_log" ? "/admin/logs" : `/admin/tables/${t}`);
   rows = res.ok ? await res.json() : [];
   render();
 }
@@ -175,6 +180,7 @@ async function load(t) {
 filter.oninput = render;
 document.getElementById("refresh").onclick = () => load(current);
 toggleAdd.onclick = () => { addForm.hidden = !addForm.hidden; };
+setInterval(() => { if (current === "call_log" && !document.hidden) load(current); }, 3000);  // live call log
 api("GET", "/admin/forms").then(d => { forms = d.forms; deletable = d.deletable; buildForm(); load(current); });
 </script>
 </body>

@@ -1,22 +1,29 @@
 """Mock bank backend API for the SAM IVR demo.
 
 Whitelisted tool-style endpoints only (balance, transactions, cards, card block),
-plus a read-only admin view of the tables for the validation UI.
+plus admin routes for the validation UI: browse/add/delete rows and a call log of
+everything the agent did, over REST and over the direct DB connection.
 """
 
+import json
 import os
 import re
-from datetime import date
+import time
+from datetime import date, datetime, timezone
 from pathlib import Path
+from urllib.parse import unquote
 
 import psycopg
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://bank:bank123@127.0.0.1:5432/bank")
+PG_LOG_FILE = os.environ.get("PG_LOG_FILE")  # Postgres JSON statement log; unset → DB rows missing from call log
 STATIC = Path(__file__).parent / "static"
+AGENT_PATHS = ("/customers/", "/accounts/", "/cards/")
 
 app = FastAPI(
     title="SAM Bank Service",
@@ -29,7 +36,28 @@ app = FastAPI(
 def query(sql: str, params: tuple = ()) -> list[dict]:
     # ponytail: one connection per request; add psycopg_pool if load testing through the API
     with psycopg.connect(DATABASE_URL, row_factory=dict_row, autocommit=True) as conn:
-        return conn.execute(sql, params).fetchall()
+        cur = conn.execute(sql, params)
+        return cur.fetchall() if cur.description else []
+
+
+def mask_pins(text: str) -> str:
+    """Hide PINs: "pin": "123456" in JSON bodies, and any quoted 6-digit literal in SQL."""
+    text = re.sub(r'("pin"\s*:\s*")[^"]*"', r'\1******"', text)
+    return re.sub(r"'\d{6}'", "'******'", text)
+
+
+@app.middleware("http")
+async def log_agent_calls(request: Request, call_next):
+    if not request.url.path.startswith(AGENT_PATHS):
+        return await call_next(request)
+    body = (await request.body()).decode(errors="replace")
+    start = time.perf_counter()
+    response = await call_next(request)
+    ms = (time.perf_counter() - start) * 1000
+    await run_in_threadpool(
+        query, "INSERT INTO api_request_log (method, path, detail, status, duration_ms) VALUES (%s, %s, %s, %s, %s)",
+        (request.method, unquote(request.url.path), mask_pins(request.url.query or body) or None, response.status_code, ms))
+    return response
 
 
 def customer_or_404(phone: str) -> dict:
@@ -93,7 +121,8 @@ def block_card(req: BlockCardRequest):
     row = query("SELECT * FROM block_card(%s, %s, %s, %s, %s, 'IVR')",
                 (req.phone, req.date_of_birth, req.pin, req.card_last4, req.reason))[0]
     if not row["success"]:
-        status = {"IDENTITY_VERIFICATION_FAILED": 401, "CARD_ALREADY_BLOCKED": 409}.get(row["message"], 404)
+        status = {"IDENTITY_VERIFICATION_FAILED": 401, "CARD_ALREADY_BLOCKED": 409,
+                  "VERIFICATION_LOCKED": 423}.get(row["message"], 404)
         raise HTTPException(status, row["message"])
     return row
 
@@ -107,6 +136,7 @@ ADMIN_TABLES = {
                     "FROM transactions t JOIN accounts a ON a.id = t.account_id ORDER BY t.posted_at DESC",
     "cards": "SELECT * FROM cards ORDER BY id",
     "card_block_requests": "SELECT * FROM card_block_requests ORDER BY created_at DESC",
+    "verification_attempts": "SELECT * FROM verification_attempts ORDER BY created_at DESC",
 }
 
 
@@ -146,6 +176,7 @@ ADMIN_DELETES = {
                     "UPDATE accounts a SET balance = a.balance - t.amount FROM t WHERE a.id = t.account_id RETURNING a.id",
     "cards": "DELETE FROM cards WHERE id = %s RETURNING id",
     "card_block_requests": "DELETE FROM card_block_requests WHERE id = %s RETURNING id",
+    "verification_attempts": "DELETE FROM verification_attempts WHERE id = %s RETURNING id",  # delete FAILED rows to unlock
 }
 
 
@@ -188,6 +219,44 @@ def admin_delete(name: str, row_id: int):
     if not admin_write(ADMIN_DELETES[name], (row_id,)):
         raise HTTPException(404, "ROW_NOT_FOUND")
     return {"deleted": row_id}
+
+
+# ── Call log: agent REST calls (api_request_log) + agent SQL (Postgres JSON log) ──
+
+PG_DURATION = re.compile(r"duration: ([\d.]+) ms\s+(?:statement|execute [^:]*): (.*)", re.S)
+
+
+def db_calls() -> list[dict]:
+    if not PG_LOG_FILE or not os.path.exists(PG_LOG_FILE):
+        return []
+    with open(PG_LOG_FILE, "rb") as f:
+        # ponytail: tails the last 2 MB of the log, plenty for a demo session; ship to a log store for more
+        f.seek(max(0, os.path.getsize(PG_LOG_FILE) - 2_000_000))
+        lines = f.read().decode(errors="replace").splitlines()
+    rows = []
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue  # first line may be cut in half by the seek
+        if e.get("user") != "sam_agent":
+            continue
+        at = datetime.strptime(e["timestamp"], "%Y-%m-%d %H:%M:%S.%f %Z").replace(tzinfo=timezone.utc)
+        if m := PG_DURATION.match(e.get("message", "")):
+            rows.append({"logged_at": at, "source": "DB", "request": mask_pins(m[2]), "result": "OK", "ms": float(m[1])})
+        elif e.get("error_severity") in ("ERROR", "FATAL"):
+            rows.append({"logged_at": at, "source": "DB", "request": mask_pins(e.get("statement") or "(connect)"),
+                         "result": "ERROR: " + e.get("message", ""), "ms": None})
+    return rows
+
+
+@app.get("/admin/logs", include_in_schema=False)
+def admin_logs(limit: int = Query(200, ge=1, le=2000)):
+    api_rows = [{"logged_at": r["created_at"], "source": "API",
+                 "request": f"{r['method']} {r['path']}" + (f"  {r['detail']}" if r["detail"] else ""),
+                 "result": str(r["status"]), "ms": float(r["duration_ms"])}
+                for r in query("SELECT * FROM api_request_log ORDER BY id DESC LIMIT %s", (limit,))]
+    return sorted(api_rows + db_calls(), key=lambda r: r["logged_at"], reverse=True)[:limit]
 
 
 @app.get("/", include_in_schema=False)

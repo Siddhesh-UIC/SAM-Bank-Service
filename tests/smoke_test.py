@@ -2,6 +2,8 @@
 
 import json
 import os
+import subprocess
+import time
 import urllib.error
 import urllib.request
 
@@ -68,5 +70,40 @@ assert call("/admin/tables/accounts", {"account_no": "9990000001", "customer_id"
 assert call(f"/admin/tables/customers/{cust['id']}", method="DELETE")[0] == 200  # cascades to the account
 assert call("/customers/by-phone/%2B6280000000000")[0] == 404
 assert call(f"/admin/tables/customers/{cust['id']}", method="DELETE")[0] == 404
+
+# Wrong-PIN lockout: 3 failures lock the phone, even the right PIN is refused, deleting the attempts unlocks.
+DEWI = {"phone": "+6281234567804", "date_of_birth": "1995-01-30", "card_last4": "9999"}  # 9999: nothing gets blocked
+
+def clear_attempts(phone):
+    for a in call("/admin/tables/verification_attempts")[1]:
+        if a["phone"] == phone:
+            call(f"/admin/tables/verification_attempts/{a['id']}", method="DELETE")
+
+clear_attempts(DEWI["phone"])
+for _ in range(3):
+    assert call("/cards/block", {**DEWI, "pin": "000000"})[0] == 401
+assert call("/cards/block", {**DEWI, "pin": "456789"})[0] == 423, "locked after 3 wrong PINs"
+clear_attempts(DEWI["phone"])
+assert call("/cards/block", {**DEWI, "pin": "456789"})[0] == 404, "unlocked: verification passes, card 9999 not found"
+clear_attempts(DEWI["phone"])
+
+# Call log: API calls appear with the PIN masked.
+logs = call("/admin/logs")[1]
+blocks = [r for r in logs if r["source"] == "API" and r["request"].startswith("POST /cards/block")]
+assert blocks and all("456789" not in r["request"] and "******" in r["request"] for r in blocks), blocks[:2]
+
+# Call log: SQL run as sam_agent (the SAM DB connector's login) appears, PIN masked, errors included.
+subprocess.run(["docker", "exec", "sam-bank-db", "psql", "-U", "sam_agent", "-d", "bank", "-c",
+                "SELECT * FROM block_card('+6281234567804', '1995-01-30', '000001', '9999')",
+                "-c", "SELECT * FROM customers"], capture_output=True, check=False)
+clear_attempts(DEWI["phone"])
+for _ in range(20):  # the log collector flushes asynchronously
+    db = [r for r in call("/admin/logs")[1] if r["source"] == "DB"]
+    if any("customers" in r["request"] and r["result"].startswith("ERROR") for r in db):
+        break
+    time.sleep(0.25)
+sql = [r for r in db if "block_card('+6281234567804'" in r["request"]]
+assert sql and "000001" not in sql[0]["request"] and "'******'" in sql[0]["request"], db[:3]
+assert any(r["request"] == "SELECT * FROM customers" and "permission denied" in r["result"] for r in db), db[:3]
 
 print("smoke test passed")

@@ -6,6 +6,11 @@ services:
       POSTGRES_DB: bank
       POSTGRES_USER: bank
       POSTGRES_PASSWORD: bank123
+    # Statement log for the UI call log: <data>/log/postgresql.json (JSON) and postgresql.log (text).
+    # Only sam_agent statements are logged (set on the role in 01_schema.sql).
+    command: >
+      postgres -c logging_collector=on -c log_destination=stderr,jsonlog
+               -c log_filename=postgresql.log -c log_rotation_age=0 -c log_rotation_size=0
     ports:
       - "${PG_PORT:-5432}:5432"
     volumes:
@@ -21,8 +26,11 @@ services:
     container_name: sam-bank-api
     environment:
       DATABASE_URL: postgresql://bank:bank123@db:5432/bank
+      PG_LOG_FILE: /pgdata/log/postgresql.json
     ports:
       - "${API_PORT:-8000}:8000"
+    volumes:
+      - pgdata:/pgdata:ro   # read-only, only to tail the Postgres statement log
     depends_on:
       db:
         condition: service_healthy

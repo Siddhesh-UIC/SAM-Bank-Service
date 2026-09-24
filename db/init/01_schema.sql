@@ -59,6 +59,27 @@ CREATE TABLE card_block_requests (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Every identity check made by block_card(); drives the wrong-PIN lockout.
+CREATE TABLE verification_attempts (
+    id         SERIAL PRIMARY KEY,
+    phone      TEXT NOT NULL,
+    outcome    TEXT NOT NULL CHECK (outcome IN ('SUCCESS', 'FAILED', 'LOCKED')),
+    channel    TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX ON verification_attempts (phone, created_at DESC);
+
+-- Every agent-facing REST call, written by the API middleware (PINs masked).
+CREATE TABLE api_request_log (
+    id          BIGSERIAL PRIMARY KEY,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    method      TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    detail      TEXT,
+    status      INT NOT NULL,
+    duration_ms NUMERIC(10,1) NOT NULL
+);
+
 -- ── Agent-facing views (never expose pin_hash) ──────────────────────────────
 
 CREATE VIEW customer_accounts AS
@@ -98,8 +119,23 @@ DECLARE
     v_customer INT;
     v_card     cards%ROWTYPE;
     v_ref      TEXT;
+    v_fails    INT;
 BEGIN
+    -- Lockout: 3 wrong attempts within 15 minutes (since the last success) locks the phone number.
+    -- The lock lifts as those failures age past 15 minutes, or when an admin deletes the attempts.
+    SELECT count(*) INTO v_fails FROM verification_attempts
+    WHERE phone = p_phone AND outcome = 'FAILED' AND created_at > now() - interval '15 minutes'
+      AND created_at > coalesce((SELECT max(created_at) FROM verification_attempts
+                                 WHERE phone = p_phone AND outcome = 'SUCCESS'), '-infinity');
+    IF v_fails >= 3 THEN
+        INSERT INTO verification_attempts (phone, outcome, channel) VALUES (p_phone, 'LOCKED', p_channel);
+        RETURN QUERY SELECT false, NULL::TEXT, 'VERIFICATION_LOCKED';
+        RETURN;
+    END IF;
+
     v_customer := verify_customer(p_phone, p_dob, p_pin);
+    INSERT INTO verification_attempts (phone, outcome, channel)
+    VALUES (p_phone, CASE WHEN v_customer IS NULL THEN 'FAILED' ELSE 'SUCCESS' END, p_channel);
     IF v_customer IS NULL THEN
         RETURN QUERY SELECT false, NULL::TEXT, 'IDENTITY_VERIFICATION_FAILED';
         RETURN;
@@ -131,3 +167,7 @@ GRANT SELECT ON customer_accounts, account_transactions, customer_cards TO sam_a
 REVOKE EXECUTE ON FUNCTION verify_customer(TEXT, DATE, TEXT) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION block_card(TEXT, DATE, TEXT, TEXT, TEXT, TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION block_card(TEXT, DATE, TEXT, TEXT, TEXT, TEXT) TO sam_agent;
+
+-- Log every statement sam_agent runs, with its duration, so the UI call log can show
+-- exactly which SQL the agent wrote. Postgres writes these to its JSON log (see docker-compose.yml).
+ALTER ROLE sam_agent SET log_min_duration_statement = 0;
