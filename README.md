@@ -69,6 +69,42 @@ In the UI, pick a table tab:
 These admin routes are for testing only. They're hidden from `/openapi.json`, so an agent wired
 through an OpenAPI connector never sees them.
 
+### Call log: what did the agent actually do?
+
+The **call log** tab (the first tab; it refreshes every 3 seconds) shows every call the agent made,
+newest first, **for both integration options in one list**:
+
+| Source | Captured how | Shows |
+|---|---|---|
+| `API` | Middleware in the API writes each agent endpoint call to the `api_request_log` table | method, path, query/body, HTTP status, ms |
+| `DB` | Postgres logs every statement run by the `sam_agent` login to a JSON log; the API reads it | the exact SQL the agent wrote, OK or the SQL error, ms |
+
+So with the direct database option you can still see which queries the model wrote, including failed
+ones (a wrong column name, or a denied table such as `SELECT * FROM customers`). Only `sam_agent` is
+logged; the UI's own queries and the API's queries don't show up as DB rows.
+
+PINs are shown as `******` in both sources.
+
+> **The raw Postgres log contains PINs in plain text.** When the agent calls `block_card(...)` over the DB
+> connection, the PIN is part of the SQL text. Masking happens when the log is displayed. The raw file at
+> `/var/lib/postgresql/data/log/` inside the `pgdata` volume is not masked. That's acceptable for fake demo
+> data, never for real customers. `docker compose down -v` deletes it.
+
+To watch the raw statement log in a terminal instead:
+
+```bash
+docker exec sam-bank-db tail -f /var/lib/postgresql/data/log/postgresql.log
+```
+
+### Wrong-PIN lockout
+
+`block_card()` records every identity check in `verification_attempts` (`SUCCESS`, `FAILED` or `LOCKED`).
+**3 wrong attempts within 15 minutes lock that phone number.** While it's locked, even the correct PIN
+returns `VERIFICATION_LOCKED` (HTTP `423`). A successful check resets the count. The lock applies to both
+the API and the DB connector, because both go through the same function.
+
+To unlock during testing, delete that phone's `FAILED` rows in the **verification attempts** tab, or wait 15 minutes.
+
 Run the smoke test (note: it blocks card `4408` for Rina):
 
 ```bash
@@ -92,6 +128,8 @@ docker compose down -v
 | `transactions` | ~230 transactions over the last 30 days (ATM, QRIS, transfer, PLN, etc.) |
 | `cards` | 11 debit/credit cards (GPN, VISA, Mastercard), one already blocked |
 | `card_block_requests` | Audit log of card blocks with reference numbers |
+| `verification_attempts` | Every DOB+PIN check made by `block_card()`; drives the lockout |
+| `api_request_log` | Every agent API call (shown in the call log) |
 
 The agent never sees the base tables. It only gets these views:
 
@@ -106,7 +144,7 @@ and one write function, which verifies the caller before it changes anything:
 ```sql
 SELECT * FROM block_card('<phone>', '<YYYY-MM-DD dob>', '<6-digit pin>', '<card last4>', 'LOST');
 -- → success | reference | message
---   message ∈ CARD_BLOCKED, IDENTITY_VERIFICATION_FAILED, CARD_NOT_FOUND, CARD_ALREADY_BLOCKED
+--   message ∈ CARD_BLOCKED, IDENTITY_VERIFICATION_FAILED, VERIFICATION_LOCKED, CARD_NOT_FOUND, CARD_ALREADY_BLOCKED
 ```
 
 ### Demo customers (fictional test data)
@@ -151,6 +189,7 @@ Base URL: `http://127.0.0.1:8000`. URL-encode the `+` in phone numbers (`%2B6281
 | `401` | `IDENTITY_VERIFICATION_FAILED`: wrong DOB or PIN |
 | `404` | `CUSTOMER_NOT_FOUND` / `ACCOUNT_NOT_FOUND` / `CARD_NOT_FOUND` |
 | `409` | `CARD_ALREADY_BLOCKED` |
+| `423` | `VERIFICATION_LOCKED`: 3 wrong attempts in 15 minutes |
 | `422` | Malformed input (for example, a PIN that isn't 6 digits) |
 
 Examples:
@@ -174,6 +213,9 @@ curl -X POST http://127.0.0.1:8000/cards/block -H "Content-Type: application/jso
 | GET | `/admin/forms` | Field list for each add-record form |
 | POST | `/admin/tables/{table}` | Add a row (not `card_block_requests`); returns `{"id": …}`, or `400` with the DB error |
 | DELETE | `/admin/tables/{table}/{id}` | Delete a row by id; `404` if it doesn't exist |
+| GET | `/admin/logs?limit=200` | Call log: agent API calls and `sam_agent` SQL, merged, newest first |
+
+`{table}` also accepts `verification_attempts` (view and delete).
 
 ---
 
@@ -243,6 +285,8 @@ HARD RULES:
   BEFORE calling block_card. Confirm which card (last 4 digits) and the reason (hilang/dicuri/penipuan).
 - Never repeat the PIN back to the caller, and never reveal why verification failed in detail.
 - If verification fails, allow one retry, then offer a human agent.
+- If the result is VERIFICATION_LOCKED, do not ask for the PIN again. Say that phone verification
+  is temporarily locked for security and offer a human agent.
 - After a successful block, read out the reference number.
 
 IF USING THE DATABASE CONNECTOR ("Bank Core Database"):
