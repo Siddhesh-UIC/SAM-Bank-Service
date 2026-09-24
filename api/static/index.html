@@ -38,21 +38,32 @@
   .ACTIVE { color:var(--ok); background:var(--ok-bg); } .BLOCKED, .CLOSED { color:var(--bad); background:var(--bad-bg); }
   .DORMANT { color:var(--warn); background:var(--warn-bg); }
   .empty { padding:24px; color:var(--muted); }
+  #add[hidden] { display:none; }
+  #add { margin:0 24px 12px; padding:12px; background:var(--panel); border:1px solid var(--line); border-radius:8px;
+         display:flex; flex-wrap:wrap; gap:8px; align-items:end; }
+  #add label { display:flex; flex-direction:column; gap:2px; font-size:12px; color:var(--muted); }
+  #add input, #add select { padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); font:inherit; min-width:120px; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.del { border:1px solid var(--line); background:none; color:var(--bad); border-radius:6px; padding:2px 8px; cursor:pointer; font:inherit; font-size:12px; }
+  #msg.err { color:var(--bad); } #msg.ok { color:var(--ok); }
   @media (max-width:600px) { header, nav, .bar, main { padding-left:16px; padding-right:16px; } }
 </style>
 </head>
 <body>
 <header>
   <h1><span>●</span> SAM Bank Service</h1>
-  <p>Mock core-banking data (read-only view)</p>
+  <p>Mock core-banking data: view, add and delete test records</p>
   <a href="/docs">API docs →</a>
 </header>
 <nav role="tablist"></nav>
 <div class="bar">
   <input id="filter" type="search" placeholder="Filter rows…" aria-label="Filter rows">
   <button id="refresh">Refresh</button>
+  <button id="toggle-add">+ Add record</button>
   <small id="count"></small>
+  <small id="msg" role="status"></small>
 </div>
+<form id="add" hidden></form>
 <main><div class="wrap"><table><thead></thead><tbody></tbody></table></div></main>
 <script>
 const TABLES = ["customers", "accounts", "transactions", "cards", "card_block_requests"];
@@ -61,7 +72,59 @@ const STATUS = new Set(["status"]);
 const idr = new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 });
 const nav = document.querySelector("nav"), thead = document.querySelector("thead"), tbody = document.querySelector("tbody");
 const filter = document.getElementById("filter"), count = document.getElementById("count");
-let current = TABLES[0], rows = [];
+const addForm = document.getElementById("add"), toggleAdd = document.getElementById("toggle-add"), msg = document.getElementById("msg");
+let current = TABLES[0], rows = [], forms = {}, deletable = [];
+
+const HINTS = { phone: "+62812…", pin: "6 digits", amount: "negative = debit", expiry: "MM/YY", card_last4: "4 digits",
+                account_no: "10 digits", account_id: "blank for credit card", email: "optional", cif: "CIF0009" };
+
+function say(text, ok) { msg.textContent = text; msg.className = ok ? "ok" : "err"; }
+
+async function api(method, url, body) {
+  const res = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: body && JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail));
+  return data;
+}
+
+function buildForm() {
+  const fields = forms[current];
+  toggleAdd.hidden = !fields;
+  addForm.replaceChildren();
+  if (!fields) { addForm.hidden = true; return; }
+  for (const [name, type] of Object.entries(fields)) {
+    const label = Object.assign(document.createElement("label"), { textContent: name });
+    let input;
+    if (Array.isArray(type)) {
+      input = document.createElement("select");
+      for (const o of type) input.append(new Option(o, o));
+    } else {
+      input = Object.assign(document.createElement("input"), { type, step: type === "number" ? "any" : undefined });
+    }
+    input.name = name;
+    input.placeholder = HINTS[name] || "";
+    label.append(input);
+    addForm.append(label);
+  }
+  addForm.append(Object.assign(document.createElement("button"), { type: "submit", textContent: "Save", className: "primary" }));
+}
+
+addForm.onsubmit = async e => {
+  e.preventDefault();
+  try {
+    const { id } = await api("POST", `/admin/tables/${current}`, Object.fromEntries(new FormData(addForm)));
+    say(`Added ${current} #${id}`, true);
+    addForm.reset();
+    load(current);
+  } catch (err) { say(err.message); }
+};
+
+async function del(id) {
+  const note = current === "customers" ? " This also deletes their accounts, cards and transactions." : "";
+  if (!confirm(`Delete ${current} #${id}?${note}`)) return;
+  try { await api("DELETE", `/admin/tables/${current}/${id}`); say(`Deleted ${current} #${id}`, true); load(current); }
+  catch (err) { say(err.message); }
+}
 
 for (const t of TABLES) {
   const b = document.createElement("button");
@@ -83,15 +146,26 @@ function render() {
   const shown = q ? rows.filter(r => Object.values(r).join(" ").toLowerCase().includes(q)) : rows;
   const cols = rows.length ? Object.keys(rows[0]) : [];
   const head = document.createElement("tr");
+  const canDelete = deletable.includes(current);
   for (const c of cols) head.append(Object.assign(document.createElement("th"), { textContent: c }));
+  if (canDelete && cols.length) head.append(document.createElement("th"));
   thead.replaceChildren(head);
-  tbody.replaceChildren(...shown.map(r => { const tr = document.createElement("tr"); for (const c of cols) tr.append(cell(c, r[c])); return tr; }));
+  tbody.replaceChildren(...shown.map(r => {
+    const tr = document.createElement("tr");
+    for (const c of cols) tr.append(cell(c, r[c]));
+    if (canDelete) {
+      const td = document.createElement("td");
+      td.append(Object.assign(document.createElement("button"), { className: "del", textContent: "Delete", onclick: () => del(r.id) }));
+      tr.append(td);
+    }
+    return tr;
+  }));
   if (!shown.length) tbody.innerHTML = `<tr><td class="empty">No rows</td></tr>`;
   count.textContent = `${shown.length} of ${rows.length} rows`;
 }
 
 async function load(t) {
-  current = t;
+  if (t !== current) { current = t; buildForm(); }
   for (const b of nav.children) b.setAttribute("aria-selected", b.textContent === t.replaceAll("_", " "));
   const res = await fetch(`/admin/tables/${t}`);
   rows = res.ok ? await res.json() : [];
@@ -100,7 +174,8 @@ async function load(t) {
 
 filter.oninput = render;
 document.getElementById("refresh").onclick = () => load(current);
-load(current);
+toggleAdd.onclick = () => { addForm.hidden = !addForm.hidden; };
+api("GET", "/admin/forms").then(d => { forms = d.forms; deletable = d.deletable; buildForm(); load(current); });
 </script>
 </body>
 </html>
