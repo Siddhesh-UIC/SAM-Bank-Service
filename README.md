@@ -20,7 +20,7 @@ graph LR
     Agent -- "A: SQL (sam_agent role)" --> PG[(Postgres :5432)]
     Agent -- "B: toolset → HTTP" --> API[FastAPI :8000]
     API --> PG
-    UI[Data viewer UI] --> API
+    UI[Data viewer UI, same :8000 service] --> API
 ```
 
 ---
@@ -33,14 +33,41 @@ Needs Docker only.
 docker compose up -d --build --wait
 ```
 
-| What | URL |
-|---|---|
-| Data viewer UI | http://localhost:8000 |
-| API docs (Swagger) | http://localhost:8000/docs |
-| OpenAPI spec | http://localhost:8000/openapi.json |
-| Postgres | `localhost:5432`, db `bank` |
+### What runs where
 
-Ports can be changed with `PG_PORT=5433 API_PORT=8001 docker compose up -d`.
+Two containers. The backend API and the frontend UI are **the same service on port 8000**: FastAPI
+serves the UI page at `/` and the API routes next to it. Postgres is the only other container.
+
+| Container | Port (host) | What it is | Credentials |
+|---|---|---|---|
+| `sam-bank-api` | **8000** | FastAPI backend **and** the data-viewer UI | none |
+| `sam-bank-db` | **5432** | PostgreSQL 16, database `bank` | owner `bank` / `bank123`, agent `sam_agent` / `sam_agent123` |
+
+| Open this | For |
+|---|---|
+| http://127.0.0.1:8000 | Data viewer UI: browse, add and delete test records |
+| http://127.0.0.1:8000/docs | Swagger UI: try every API endpoint in the browser |
+| http://127.0.0.1:8000/openapi.json | OpenAPI spec (for an OpenAPI connector) |
+| `127.0.0.1:5432` | Postgres, for SAM's PostgreSQL connector or any SQL client |
+
+> **Use `127.0.0.1`, not `localhost`, on Windows.** `localhost` tries IPv6 first, and Docker Desktop
+> stalls about 20 seconds on it before falling back. That's slow enough to make SAM tool calls time out.
+
+Ports can be changed with `PG_PORT=5433 API_PORT=8001 docker compose up -d`. Stop everything with
+`docker compose down`.
+
+### Adding and deleting test records
+
+In the UI, pick a table tab:
+
+- **+ Add record** opens a form for customers, accounts, transactions and cards. The PIN is hashed on save.
+  A new transaction also changes the account balance, so balances always match the transaction history.
+- **Delete** on any row removes it. Deleting a customer also deletes their accounts, cards and transactions.
+  Deleting a transaction reverses its effect on the balance.
+- Errors from the database (duplicate CIF, bad status value, unknown account_no, and so on) show next to the buttons.
+
+These admin routes are for testing only. They're hidden from `/openapi.json`, so an agent wired
+through an OpenAPI connector never sees them.
 
 Run the smoke test (note: it blocks card `4408` for Rina):
 
@@ -97,18 +124,56 @@ SELECT * FROM block_card('<phone>', '<YYYY-MM-DD dob>', '<6-digit pin>', '<card 
 
 ---
 
-## REST API
+## API endpoints
 
-| Method | Path | operationId |
+Base URL: `http://127.0.0.1:8000`. URL-encode the `+` in phone numbers (`%2B6281234567801`).
+
+### Agent endpoints (in the OpenAPI spec)
+
+| Method | Path | operationId | Returns |
+|---|---|---|---|
+| GET | `/health` | | `{"status":"healthy"}` |
+| GET | `/customers/by-phone/{phone}` | `get_customer_by_phone` | CIF, name, phone, city |
+| GET | `/customers/by-phone/{phone}/accounts` | `get_balances` | accounts with balance (IDR) and status |
+| GET | `/accounts/{account_no}/transactions?limit=5` | `get_recent_transactions` | newest first; `limit` 1–50; negative amount = debit |
+| GET | `/customers/by-phone/{phone}/cards` | `get_cards` | card type, network, last 4, status |
+| POST | `/cards/block` | `block_card` | `{success, reference, message}` |
+
+`POST /cards/block` body:
+
+```json
+{ "phone": "+6281234567802", "date_of_birth": "1990-07-25", "pin": "234567", "card_last4": "1177", "reason": "LOST" }
+```
+
+| Status | Meaning |
+|---|---|
+| `200` | Blocked; `reference` like `BLK-20260925-A1B2C3` |
+| `401` | `IDENTITY_VERIFICATION_FAILED`: wrong DOB or PIN |
+| `404` | `CUSTOMER_NOT_FOUND` / `ACCOUNT_NOT_FOUND` / `CARD_NOT_FOUND` |
+| `409` | `CARD_ALREADY_BLOCKED` |
+| `422` | Malformed input (for example, a PIN that isn't 6 digits) |
+
+Examples:
+
+```bash
+curl http://127.0.0.1:8000/customers/by-phone/%2B6281234567801/accounts
+```
+```bash
+curl "http://127.0.0.1:8000/accounts/1230000001/transactions?limit=3"
+```
+```bash
+curl -X POST http://127.0.0.1:8000/cards/block -H "Content-Type: application/json" -d "{\"phone\":\"+6281234567802\",\"date_of_birth\":\"1990-07-25\",\"pin\":\"234567\",\"card_last4\":\"1177\"}"
+```
+
+### Admin endpoints (UI only, hidden from the OpenAPI spec)
+
+| Method | Path | What it does |
 |---|---|---|
-| GET | `/customers/by-phone/{phone}` | `get_customer_by_phone` |
-| GET | `/customers/by-phone/{phone}/accounts` | `get_balances` |
-| GET | `/accounts/{account_no}/transactions?limit=5` | `get_recent_transactions` |
-| GET | `/customers/by-phone/{phone}/cards` | `get_cards` |
-| POST | `/cards/block` | `block_card` |
-
-URL-encode the `+` in phone numbers (`%2B6281234567801`). Card-block errors: `401` wrong identity,
-`404` card not found, `409` already blocked, `422` malformed input.
+| GET | `/` | Data viewer UI page |
+| GET | `/admin/tables/{table}` | All rows of `customers`, `accounts`, `transactions`, `cards` or `card_block_requests` |
+| GET | `/admin/forms` | Field list for each add-record form |
+| POST | `/admin/tables/{table}` | Add a row (not `card_block_requests`); returns `{"id": …}`, or `400` with the DB error |
+| DELETE | `/admin/tables/{table}/{id}` | Delete a row by id; `404` if it doesn't exist |
 
 ---
 
@@ -121,7 +186,7 @@ URL-encode the `+` in phone numbers (`%2B6281234567801`). Card-block errors: `40
 | Connector Name | `Bank Core Database` |
 | Description | `Mock core banking: customer accounts, balances, transactions and cards. Read via views customer_accounts, account_transactions, customer_cards; block cards only via block_card().` |
 | Database Name | `bank` |
-| Database Hostname | `localhost` |
+| Database Hostname | `127.0.0.1` |
 | Port | `5432` |
 | Username | `sam_agent` |
 | Password | `sam_agent123` |
@@ -140,9 +205,9 @@ URL-encode the `+` in phone numbers (`%2B6281234567801`). Card-block errors: `40
    - **Tools:** upload `Bank-tools-python.zip`
 3. Confirm the 5 tools show as **Ready**: `get_customer`, `get_balances`, `get_recent_transactions`, `get_cards`, `block_card`.
 
-The toolset calls `http://localhost:8000` by default. Set the `BANK_API_URL` env var to point it somewhere else.
+The toolset calls `http://127.0.0.1:8000` by default. Set the `BANK_API_URL` env var to point it somewhere else.
 
-> If your SAM build has an **OpenAPI connector**, you can point it at `http://localhost:8000/openapi.json` instead of using the toolset. The operationIds above become the tool names.
+> If your SAM build has an **OpenAPI connector**, you can point it at `http://127.0.0.1:8000/openapi.json` instead of using the toolset. The operationIds above become the tool names.
 
 ---
 
@@ -211,7 +276,7 @@ IF USING THE TOOLSET ("bank-tools"):
 ```
 (The last one should come back as already blocked.)
 
-Open http://localhost:8000 → **cards** / **card block requests** to confirm what the agent changed.
+Open http://127.0.0.1:8000 → **cards** / **card block requests** to confirm what the agent changed.
 
 ---
 
