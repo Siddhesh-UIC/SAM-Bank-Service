@@ -173,7 +173,7 @@ Base URL: `http://127.0.0.1:8000`. URL-encode the `+` in phone numbers (`%2B6281
 | GET | `/health` | | `{"status":"healthy"}` |
 | GET | `/customers/by-phone/{phone}` | `get_customer_by_phone` | CIF, name, phone, city |
 | GET | `/customers/by-phone/{phone}/accounts` | `get_balances` | accounts with balance (IDR) and status |
-| GET | `/accounts/{account_no}/transactions?limit=5` | `get_recent_transactions` | newest first; `limit` 1–50; negative amount = debit |
+| GET | `/customers/by-phone/{phone}/accounts/{account_no}/transactions?limit=5` | `get_recent_transactions` | newest first; `limit` 1–50; negative amount = debit. Only the caller's own accounts: any other account number gives `404 ACCOUNT_NOT_FOUND` |
 | GET | `/customers/by-phone/{phone}/cards` | `get_cards` | card type, network, last 4, status |
 | POST | `/cards/block` | `block_card` | `{success, reference, message}` |
 
@@ -198,7 +198,7 @@ Examples:
 curl http://127.0.0.1:8000/customers/by-phone/%2B6281234567801/accounts
 ```
 ```bash
-curl "http://127.0.0.1:8000/accounts/1230000001/transactions?limit=3"
+curl "http://127.0.0.1:8000/customers/by-phone/%2B6281234567801/accounts/1230000001/transactions?limit=3"
 ```
 ```bash
 curl -X POST http://127.0.0.1:8000/cards/block -H "Content-Type: application/json" -d "{\"phone\":\"+6281234567802\",\"date_of_birth\":\"1990-07-25\",\"pin\":\"234567\",\"card_last4\":\"1177\"}"

@@ -88,10 +88,13 @@ def get_balances(phone: str):
         "WHERE phone = %s ORDER BY account_no", (phone,))
 
 
-@app.get("/accounts/{account_no}/transactions", tags=["transactions"], operation_id="get_recent_transactions",
-         summary="Most recent transactions for an account, newest first (negative amount = debit)")
-def get_transactions(account_no: str, limit: int = Query(5, ge=1, le=50)):
-    if not query("SELECT 1 FROM accounts WHERE account_no = %s", (account_no,)):
+@app.get("/customers/by-phone/{phone}/accounts/{account_no}/transactions", tags=["transactions"],
+         operation_id="get_recent_transactions",
+         summary="Most recent transactions for one of the caller's accounts, newest first (negative amount = debit)")
+def get_transactions(phone: str, account_no: str, limit: int = Query(5, ge=1, le=50)):
+    # Scoped to the caller: an account that exists but belongs to someone else gives the same 404 as one that
+    # doesn't exist, so a caller can't read another customer's transactions or probe which account numbers exist.
+    if not query("SELECT 1 FROM customer_accounts WHERE phone = %s AND account_no = %s", (phone, account_no)):
         raise HTTPException(404, "ACCOUNT_NOT_FOUND")
     return query(
         "SELECT posted_at, description, channel, amount, direction FROM account_transactions "

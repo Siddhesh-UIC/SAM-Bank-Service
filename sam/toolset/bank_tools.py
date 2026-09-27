@@ -34,10 +34,11 @@ SCHEMA = {"tools": {
     "get_balances": tool("List the customer's accounts with current balances in IDR.",
                          {"phone": PHONE}, ["phone"]),
     "get_recent_transactions": tool(
-        "Most recent transactions for one account, newest first. Negative amount = debit.",
-        {"account_no": {"type": "string", "description": "10-digit account number"},
+        "Most recent transactions for one of the caller's accounts, newest first. Negative amount = debit.",
+        {"phone": PHONE,
+         "account_no": {"type": "string", "description": "10-digit account number, one of the caller's (see get_balances)"},
          "limit": {"type": "integer", "description": "Number of transactions (1-50, default 5)"}},
-        ["account_no"]),
+        ["phone", "account_no"]),
     "get_cards": tool("List the customer's debit/credit cards with last 4 digits and status.",
                       {"phone": PHONE}, ["phone"]),
     "block_card": tool(
@@ -73,7 +74,8 @@ TOOLS = {
     "get_customer": lambda a: http("GET", f"/customers/by-phone/{q(a['phone'])}"),
     "get_balances": lambda a: http("GET", f"/customers/by-phone/{q(a['phone'])}/accounts"),
     "get_recent_transactions": lambda a: http(
-        "GET", f"/accounts/{q(a['account_no'])}/transactions?limit={int(a.get('limit') or 5)}"),
+        "GET", f"/customers/by-phone/{q(a['phone'])}/accounts/{q(a['account_no'])}/transactions"
+               f"?limit={int(a.get('limit') or 5)}"),
     "get_cards": lambda a: http("GET", f"/customers/by-phone/{q(a['phone'])}/cards"),
     "block_card": lambda a: http("POST", "/cards/block", {
         k: a[k] for k in ("phone", "date_of_birth", "pin", "card_last4", "reason") if a.get(k)}),
