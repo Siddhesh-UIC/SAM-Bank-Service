@@ -247,7 +247,7 @@ Left to itself, the agent guesses the SQL. For example, it once joined on `custo
 
 The details are in `references/schema.md` and `references/queries.md`.
 
-With the SAM CLI, from the `sam` folder:
+With the SAM CLI, from the `sam` folder. SAM Desktop installs the CLI at `%LOCALAPPDATA%ProgramsSolace Agent Meshisam.exe`:
 
 ```powershell
 cd sam
@@ -256,7 +256,7 @@ $env:SAM_TOOL_TARGET_OS="windows"; $env:SAM_TOOL_TARGET_ARCH="amd64"; $env:SAM_T
 sam skill package bank-postgres
 ```
 
-Upload the ZIP on SAM's skills page and add the skill to the bank agent. The skill has no bundled tools; it works with the PostgreSQL connector above.
+This writes `sam/bank-postgres.zip` (git-ignored). Upload it in SAM (Skills → Upload skill) and add the skill to the bank agent. The skill has no bundled tools; it works with the PostgreSQL connector above.
 
 ## Option B — Connect SAM through the REST API (toolset)
 
