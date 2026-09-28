@@ -235,6 +235,29 @@ curl -X POST http://127.0.0.1:8000/cards/block -H "Content-Type: application/jso
 
 `sam_agent` is least-privilege: SELECT on the three views plus EXECUTE on `block_card()`, and nothing else.
 
+### Skill: teach the agent the database
+
+Left to itself, the agent guesses the SQL. For example, it once joined on `customer_id`, which the views don't have. The skill [`sam/skills/bank-postgres`](sam/skills/bank-postgres/SKILL.md) gives it what it needs:
+
+- the rules: always filter by the caller's phone, query in this turn, only put validated values into SQL;
+- every view's columns, types and allowed values;
+- the entity relationships behind the views;
+- `block_card()` and its result codes;
+- a tested query for each request.
+
+The details are in `references/schema.md` and `references/queries.md`.
+
+With the SAM CLI, from the `sam` folder:
+
+```powershell
+cd sam
+sam skill validate bank-postgres
+$env:SAM_TOOL_TARGET_OS="windows"; $env:SAM_TOOL_TARGET_ARCH="amd64"; $env:SAM_TOOL_PYTHON_VERSION="3.14"
+sam skill package bank-postgres
+```
+
+Upload the ZIP on SAM's skills page and add the skill to the bank agent. The skill has no bundled tools; it works with the PostgreSQL connector above.
+
 ## Option B — Connect SAM through the REST API (toolset)
 
 1. Zip the toolset:
