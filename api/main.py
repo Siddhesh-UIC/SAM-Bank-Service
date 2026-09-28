@@ -33,7 +33,7 @@ app = FastAPI(
 )
 
 
-def query(sql: str, params: tuple = ()) -> list[dict]:
+def query(sql: str, params: tuple = ()) -> list[dict]:  # runs as the owner "bank", unlike SAM's sam_agent
     # ponytail: one connection per request; add psycopg_pool if load testing through the API
     with psycopg.connect(DATABASE_URL, row_factory=dict_row, autocommit=True) as conn:
         cur = conn.execute(sql, params)
@@ -48,7 +48,7 @@ def mask_pins(text: str) -> str:
 
 
 @app.middleware("http")
-async def log_agent_calls(request: Request, call_next):
+async def log_agent_calls(request: Request, call_next):  # the UI's call log: every agent/IVR request, secrets masked
     if not request.url.path.startswith(AGENT_PATHS):
         return await call_next(request)
     body = (await request.body()).decode(errors="replace")
@@ -60,6 +60,8 @@ async def log_agent_calls(request: Request, call_next):
         (request.method, unquote(request.url.path), mask_pins(request.url.query or body) or None, response.status_code, ms))
     return response
 
+
+# ── Agent endpoints (the OpenAPI spec). Used by the Option B toolset; the voice pipe uses only get_customer ──
 
 def customer_or_404(phone: str) -> dict:
     rows = query("SELECT cif, full_name, phone, city FROM customers WHERE phone = %s", (phone,))

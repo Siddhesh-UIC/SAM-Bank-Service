@@ -375,3 +375,23 @@ Open http://127.0.0.1:8000 → **cards** / **card block requests** to confirm wh
 - **Solace event backbone.** SAM calls the backend directly here. The plan's request/reply over topics
   (`bank/account/{id}/balance/request`) comes in build step 8.
 - **mTLS / API auth.** The API is unauthenticated and meant for local demos only.
+
+## Known issues and limits
+
+From a code review on 2026-09-28. None of these is fixed yet.
+
+- **Both ports are open to your whole network.** Docker publishes `8000` and `5432` on every interface, not just `127.0.0.1`. Anyone on the same Wi-Fi can:
+  - read every customer through the unauthenticated API;
+  - add or delete records through the admin routes;
+  - log in to Postgres with the passwords in this README.
+
+  Binding them as `127.0.0.1:8000:8000` and `127.0.0.1:5432:5432` would close that.
+- **"Only the caller's data" is enforced by instructions, not by the database.** `sam_agent` can still read every customer's rows from the three views, and can still call the old `block_card(phone, dob, pin)`. The planned fix, read functions keyed by the session token (`my_accounts(token)` etc.), is deferred.
+- **Registered numbers can be discovered.** `/ivr/sessions` and `GET /customers/by-phone/{phone}` answer differently for registered and unregistered numbers.
+- **Old rows pile up.** `ivr_sessions` and `verification_attempts` are never cleaned up.
+- **One lockout counts both kinds of failure.** A wrong date of birth in `block_card_verified` counts against the same limit as a wrong PIN, so three bad dates of birth also block the caller's next PIN verification for 15 minutes.
+- **The call log over-masks.** It hides every quoted 6-digit value in SQL, which catches amounts such as `'150000'` as well as PINs.
+- **Option B is unused.** The REST toolset (`sam/toolset/bank_tools.py`, `Bank-tools-python.zip`, and the agent endpoints it calls) isn't used by the current setup. Its `block_card` still asks for the PIN, which doesn't fit the verified-call flow.
+- **The smoke test changes data.** It blocks real cards every time it runs on fresh data (Rina's `4408`, Agus's cards), so re-running it leaves them blocked.
+- The API opens one database connection per request.
+- **Line-ending churn in the history.** Commit `5c8e7f1` rewrote whole files (`api/main.py`, `bank_tools.py`, `tests/smoke_test.py`), so their diffs show every line changed.

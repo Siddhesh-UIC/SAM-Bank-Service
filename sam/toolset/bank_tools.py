@@ -6,6 +6,9 @@ SAM STR protocol (same as the workshop travel_planner.py):
   --schema              → print JSON schema for all tools, then exit
   <runner_args.json>    → read args, execute tool, write result to result_file path
 
+Option B in the README. Not used by the current setup, where SAM queries PostgreSQL through its connector with the
+bank-postgres skill; block_card here still asks for the PIN (there is no verified-session variant of it yet).
+
 Base URL defaults to http://127.0.0.1:8000; override with the BANK_API_URL env var.
 (127.0.0.1, not localhost: on Windows localhost tries IPv6 first and Docker Desktop stalls ~20s on it.)
 """
