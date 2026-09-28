@@ -247,7 +247,7 @@ Left to itself, the agent guesses the SQL. For example, it once joined on `custo
 
 The details are in `references/schema.md` and `references/queries.md`.
 
-With the SAM CLI, from the `sam` folder. SAM Desktop installs the CLI at `%LOCALAPPDATA%ProgramsSolace Agent Meshisam.exe`:
+With the SAM CLI, from the `sam` folder. SAM Desktop installs the CLI at `%LOCALAPPDATA%\Programs\Solace Agent Mesh\cli\sam.exe`:
 
 ```powershell
 cd sam
