@@ -28,9 +28,15 @@ assert call("/customers/by-phone/%2B620000")[0] == 404
 status, accounts = call(f"/customers/by-phone/{PHONE}/accounts")
 assert status == 200 and accounts[0]["account_no"] == "1230000011", accounts
 
-status, txns = call("/accounts/1230000011/transactions?limit=3")
+status, txns = call(f"/customers/by-phone/{PHONE}/accounts/1230000011/transactions?limit=3")
 assert status == 200 and len(txns) == 3
 assert txns[0]["posted_at"] >= txns[1]["posted_at"] >= txns[2]["posted_at"]
+# Another customer's account is refused, exactly like one that doesn't exist, and the old unscoped route is gone.
+other = call("/customers/by-phone/%2B6281234567802/accounts")[1][0]["account_no"]
+assert other != "1230000011"
+assert call(f"/customers/by-phone/{PHONE}/accounts/{other}/transactions")[0] == 404, "read another customer's account"
+assert call(f"/customers/by-phone/{PHONE}/accounts/0000000000/transactions")[0] == 404
+assert call("/accounts/1230000011/transactions")[0] == 404, "unscoped transactions route still exists"
 
 block = {"phone": "+6281234567808", "date_of_birth": "1993-04-04", "pin": "000000", "card_last4": "4408"}
 assert call("/cards/block", block)[0] == 401, "wrong PIN must be refused"
