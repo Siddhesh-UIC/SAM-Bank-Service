@@ -106,9 +106,9 @@ WHERE phone = '<phone>' AND card_last4 = '4821';
 
 ## Block a card
 
-Only after you have the date of birth and the 6-digit PIN from the caller (see SKILL.md, "Blocking a card"):
+Only once the caller has chosen the card and told you their date of birth (see SKILL.md, "Blocking a card"). Never ask for a PIN: the call is already verified.
 ```sql
-SELECT * FROM block_card('<phone>', '1985-03-12', '<6-digit PIN>', '4821', 'LOST', 'IVR');
+SELECT * FROM block_card_verified('<sessionToken>', '4821', '1985-03-12', 'LOST');
 ```
 The result is one row, `success | reference | message`. Answer from `message`.
 
@@ -121,4 +121,5 @@ The result is one row, `success | reference | message`. Answer from `message`.
 | A query with no `WHERE phone = ...` | Returns other customers' data | Always filter by the caller's phone |
 | `balance` from `account_transactions` | Transactions have no balance | Balance is in `customer_accounts` |
 | `WHERE phone = '081234567801'` | Phones are stored in E.164 | Use `callerPhone` exactly: `'+6281234567801'` |
-| `SELECT block_card(...)` | Returns one composite value | `SELECT * FROM block_card(...)` |
+| `SELECT block_card_verified(...)` | Returns one composite value | `SELECT * FROM block_card_verified(...)` |
+| `block_card('<phone>', ..., '<pin>', ...)`, or asking for the PIN | The call is already verified; the PIN is never needed | `block_card_verified('<sessionToken>', ...)` |

@@ -105,7 +105,30 @@ the API and the DB connector, because both go through the same function.
 
 To unlock during testing, delete that phone's `FAILED` rows in the **verification attempts** tab, or wait 15 minutes.
 
-Run the smoke test (note: it blocks card `4408` for Rina):
+### Verified call sessions
+
+The voice pipe checks the caller once, at the start of the call, then hands the call to SAM:
+
+1. `POST /ivr/sessions` `{"phone": "+6281234567801", "pin": "123456"}` checks the PIN, using the same lockout.
+   - `200` returns `{"token", "full_name"}`.
+   - Failures are `404 CUSTOMER_NOT_FOUND` (number not registered), `401 IDENTITY_VERIFICATION_FAILED` or `423 VERIFICATION_LOCKED`.
+2. The token (64 hex characters) goes to SAM with every turn as `sessionToken`. SAM never asks for the PIN.
+3. To block a card, SAM calls `block_card_verified(token, card_last4, date_of_birth)` through the DB connector.
+   - The session decides whose cards these are, so SAM can only block the caller's own card.
+   - A wrong date of birth counts towards the lockout.
+4. `POST /ivr/sessions/end` `{"token": ...}` at hang-up. After that, or after 30 minutes, the token returns `SESSION_INVALID`.
+
+These endpoints are for the voice pipe, so they're hidden from the OpenAPI spec. The **ivr sessions** tab shows each session and whether it's active. The call log shows PINs and tokens masked.
+
+An existing database (created before this) needs the new table and functions once:
+
+```bash
+docker exec -i sam-bank-db psql -U bank -d bank < db/init/03_ivr_sessions.sql
+```
+
+Then rebuild the API: `docker compose up -d --build api`.
+
+Run the smoke test. Note that it blocks card `4408` for Rina and a card for Agus:
 
 ```bash
 python tests/smoke_test.py

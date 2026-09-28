@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://bank:bank123@127.0.0.1:5432/bank")
 PG_LOG_FILE = os.environ.get("PG_LOG_FILE")  # Postgres JSON statement log; unset → DB rows missing from call log
 STATIC = Path(__file__).parent / "static"
-AGENT_PATHS = ("/customers/", "/accounts/", "/cards/")
+AGENT_PATHS = ("/customers/", "/accounts/", "/cards/", "/ivr/")
 
 app = FastAPI(
     title="SAM Bank Service",
@@ -41,8 +41,9 @@ def query(sql: str, params: tuple = ()) -> list[dict]:
 
 
 def mask_pins(text: str) -> str:
-    """Hide PINs: "pin": "123456" in JSON bodies, and any quoted 6-digit literal in SQL."""
-    text = re.sub(r'("pin"\s*:\s*")[^"]*"', r'\1******"', text)
+    """Hide PINs and session tokens: "pin"/"token" in JSON bodies, quoted 6-digit and 64-hex literals in SQL."""
+    text = re.sub(r'("(?:pin|token)"\s*:\s*")[^"]*"', r'\1******"', text)
+    text = re.sub(r"'[0-9a-f]{64}'", "'<session token>'", text)
     return re.sub(r"'\d{6}'", "'******'", text)
 
 
@@ -130,6 +131,35 @@ def block_card(req: BlockCardRequest):
     return row
 
 
+# ── IVR sessions (for the voice pipe, not agents; hidden from the OpenAPI spec) ────
+# The voice pipe checks the caller's PIN once at the start of a call and gets a token; the agent then acts for that
+# customer through the token (block_card_verified) and never asks for the PIN.
+
+class OpenSessionRequest(BaseModel):
+    phone: str = Field(description="Caller phone number, E.164")
+    pin: str = Field(pattern=r"^\d{6}$", description="6-digit phone-banking PIN")
+    channel: str = Field("IVR", max_length=20)
+
+
+class EndSessionRequest(BaseModel):
+    token: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+@app.post("/ivr/sessions", include_in_schema=False)
+def open_session(req: OpenSessionRequest):
+    """200 {token, full_name}; 404 CUSTOMER_NOT_FOUND, 401 IDENTITY_VERIFICATION_FAILED, 423 VERIFICATION_LOCKED."""
+    row = query("SELECT * FROM open_ivr_session(%s, %s, %s)", (req.phone, req.pin, req.channel))[0]
+    if not row["success"]:
+        raise HTTPException({"CUSTOMER_NOT_FOUND": 404, "VERIFICATION_LOCKED": 423}.get(row["message"], 401),
+                            row["message"])
+    return {"token": row["token"], "full_name": row["full_name"]}
+
+
+@app.post("/ivr/sessions/end", include_in_schema=False)
+def end_session(req: EndSessionRequest):
+    return {"ended": bool(query("SELECT end_ivr_session(%s) AS ended", (req.token,))[0]["ended"])}
+
+
 # ── Validation UI (not for agents; hidden from the OpenAPI spec) ────────────
 
 ADMIN_TABLES = {
@@ -140,6 +170,10 @@ ADMIN_TABLES = {
     "cards": "SELECT * FROM cards ORDER BY id",
     "card_block_requests": "SELECT * FROM card_block_requests ORDER BY created_at DESC",
     "verification_attempts": "SELECT * FROM verification_attempts ORDER BY created_at DESC",
+    "ivr_sessions": "SELECT left(s.token, 8) || '…' AS token, c.phone, c.full_name, s.channel, s.created_at, "
+                    "s.expires_at, s.ended_at, CASE WHEN s.ended_at IS NULL AND s.expires_at > now() "
+                    "THEN 'ACTIVE' ELSE 'CLOSED' END AS status "
+                    "FROM ivr_sessions s JOIN customers c ON c.id = s.customer_id ORDER BY s.created_at DESC",
 }
 
 
