@@ -261,13 +261,11 @@ curl -X POST http://127.0.0.1:8000/cards/block -H "Content-Type: application/jso
 
 Left to itself, the agent guesses the SQL. For example, it once joined on `customer_id`, which the views don't have. The skill [`sam/skills/bank-postgres`](sam/skills/bank-postgres/SKILL.md) gives it what it needs:
 
-- the rules: always filter by the caller's phone, query in this turn, only put validated values into SQL;
-- every view's columns, types and allowed values;
-- the entity relationships behind the views;
-- `block_card()` and its result codes;
-- a tested query for each request.
+- a tested query for each request: balance, last 3 transactions, cards, and `block_card_verified` with its result codes;
+- the three views' columns and their allowed values;
+- the rules: always filter by the caller's phone, make real tool calls, only card digits go into SQL, retry once on a wrong column.
 
-The details are in `references/schema.md` and `references/queries.md`.
+**It's kept short on purpose (about 3 KB).** SAM adds a loaded skill to the model's prompt, and Qwen's limit is 16,384 tokens for the prompt and reply together. The earlier 19.5 KB version, with two reference files, pushed every voice turn over that limit as soon as it loaded ("context too large to compact — single oversized turn" in SAM's log). Keep additions small. The full schema is under [Data model](#data-model).
 
 With the SAM CLI, from the `sam` folder. SAM Desktop installs the CLI at `%LOCALAPPDATA%\Programs\Solace Agent Mesh\cli\sam.exe`:
 
