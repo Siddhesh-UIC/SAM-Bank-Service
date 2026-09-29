@@ -106,9 +106,9 @@ WHERE phone = '<phone>' AND card_last4 = '4821';
 
 ## Block a card
 
-Only once the caller has chosen the card and told you their date of birth (see SKILL.md, "Blocking a card"). Never ask for a PIN: the call is already verified.
+Once the caller has said which card (see SKILL.md, "Blocking a card"). Only the last 4 digits are needed: the call is already verified, so never ask for a PIN or a date of birth.
 ```sql
-SELECT * FROM block_card_verified('<sessionToken>', '4821', '1985-03-12', 'LOST');
+SELECT * FROM block_card_verified('<sessionToken>', '4821', 'LOST');
 ```
 The result is one row, `success | reference | message`. Answer from `message`.
 

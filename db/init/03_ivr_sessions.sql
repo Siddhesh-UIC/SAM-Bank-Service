@@ -58,41 +58,29 @@ RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$
     UPDATE ivr_sessions SET ended_at = now() WHERE token = p_token AND ended_at IS NULL RETURNING true;
 $$;
 
--- Block a card for the customer of a verified session: no PIN (they gave it at the start of the call), but the date
--- of birth must match, and a wrong one counts towards the lockout. The session decides whose cards these are, so the
--- agent cannot block another customer's card whatever it is told. Results:
+-- Block a card for the customer of a verified session: the caller entered their PIN at the start of the call, so only
+-- the card's last 4 digits are needed. The session decides whose cards these are, so the agent cannot block another
+-- customer's card whatever it is told. Results:
 --   (true, 'BLK-...', 'CARD_BLOCKED')
---   (false, null, 'SESSION_INVALID' | 'VERIFICATION_LOCKED' | 'IDENTITY_VERIFICATION_FAILED'
---                 | 'CARD_NOT_FOUND' | 'CARD_ALREADY_BLOCKED')
-CREATE OR REPLACE FUNCTION block_card_verified(p_token TEXT, p_card_last4 TEXT, p_dob DATE,
-                                               p_reason TEXT DEFAULT 'LOST')
+--   (false, null, 'SESSION_INVALID' | 'CARD_NOT_FOUND' | 'CARD_ALREADY_BLOCKED')
+DROP FUNCTION IF EXISTS block_card_verified(TEXT, TEXT, DATE, TEXT);  -- the earlier version also asked for the DOB
+CREATE OR REPLACE FUNCTION block_card_verified(p_token TEXT, p_card_last4 TEXT, p_reason TEXT DEFAULT 'LOST')
 RETURNS TABLE (success BOOLEAN, reference TEXT, message TEXT)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE
-    v_customer customers%ROWTYPE;
+    v_customer INT;
     v_channel  TEXT;
     v_card     cards%ROWTYPE;
     v_ref      TEXT;
 BEGIN
-    SELECT s.channel INTO v_channel FROM ivr_sessions s
+    SELECT s.customer_id, s.channel INTO v_customer, v_channel FROM ivr_sessions s
     WHERE s.token = p_token AND s.ended_at IS NULL AND s.expires_at > now();
     IF NOT FOUND THEN
         RETURN QUERY SELECT false, NULL::TEXT, 'SESSION_INVALID';
         RETURN;
     END IF;
-    SELECT c.* INTO v_customer FROM customers c JOIN ivr_sessions s ON s.customer_id = c.id WHERE s.token = p_token;
-    IF phone_locked(v_customer.phone) THEN
-        INSERT INTO verification_attempts (phone, outcome, channel) VALUES (v_customer.phone, 'LOCKED', v_channel);
-        RETURN QUERY SELECT false, NULL::TEXT, 'VERIFICATION_LOCKED';
-        RETURN;
-    END IF;
-    IF v_customer.date_of_birth <> p_dob THEN
-        INSERT INTO verification_attempts (phone, outcome, channel) VALUES (v_customer.phone, 'FAILED', v_channel);
-        RETURN QUERY SELECT false, NULL::TEXT, 'IDENTITY_VERIFICATION_FAILED';
-        RETURN;
-    END IF;
 
-    SELECT * INTO v_card FROM cards k WHERE k.customer_id = v_customer.id AND k.card_last4 = p_card_last4;
+    SELECT * INTO v_card FROM cards k WHERE k.customer_id = v_customer AND k.card_last4 = p_card_last4;
     IF NOT FOUND THEN
         RETURN QUERY SELECT false, NULL::TEXT, 'CARD_NOT_FOUND';
         RETURN;
@@ -111,5 +99,5 @@ $$;
 
 -- Only the bank API (the owner) opens and ends sessions; the SAM connector may only block through one.
 REVOKE EXECUTE ON FUNCTION phone_locked(TEXT), open_ivr_session(TEXT, TEXT, TEXT), end_ivr_session(TEXT),
-                           block_card_verified(TEXT, TEXT, DATE, TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION block_card_verified(TEXT, TEXT, DATE, TEXT) TO sam_agent;
+                           block_card_verified(TEXT, TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION block_card_verified(TEXT, TEXT, TEXT) TO sam_agent;

@@ -112,8 +112,8 @@ sql = [r for r in db if "block_card('+6281234567804'" in r["request"]]
 assert sql and "000001" not in sql[0]["request"] and "'******'" in sql[0]["request"], db[:3]
 assert any(r["request"] == "SELECT * FROM customers" and "permission denied" in r["result"] for r in db), db[:3]
 
-# IVR sessions: the PIN is checked once and opens a session; blocking through it needs no PIN, only the date of
-# birth, and only ever touches that customer's cards; after hang-up the token is dead.
+# IVR sessions: the PIN is checked once and opens a session; blocking through it needs only the card's last 4 digits
+# and only ever touches that customer's cards; after hang-up the token is dead.
 AGUS = "+6281234567803"
 clear_attempts(AGUS)
 assert call("/ivr/sessions", {"phone": "+6280000000009", "pin": "123456"})[0] == 404, "unregistered number"
@@ -123,22 +123,21 @@ status, session = call("/ivr/sessions", {"phone": AGUS, "pin": "345678"})
 assert status == 200 and session["full_name"] == "Agus Wijaya" and len(session["token"]) == 64, session
 token = session["token"]
 
-def block_verified(last4, dob):
+def block_verified(last4):
     out = subprocess.run(["docker", "exec", "sam-bank-db", "psql", "-U", "sam_agent", "-d", "bank", "-Atc",
-                          f"SELECT message FROM block_card_verified('{token}', '{last4}', '{dob}')"],
+                          f"SELECT message FROM block_card_verified('{token}', '{last4}')"],
                          capture_output=True, text=True)
     return out.stdout.strip() or out.stderr.strip()
 
 _, agus_cards = call(f"/customers/by-phone/{AGUS.replace('+', '%2B')}/cards")
 active = [c["card_last4"] for c in agus_cards if c["card_status"] == "ACTIVE"]
-assert block_verified("4821", "1978-11-02") == "CARD_NOT_FOUND", "Budi's card: not this session's customer"
-assert block_verified(active[0] if active else "0000", "1999-01-01") == "IDENTITY_VERIFICATION_FAILED"
-if active:
-    assert block_verified(active[0], "1978-11-02") == "CARD_BLOCKED"
-    assert block_verified(active[0], "1978-11-02") == "CARD_ALREADY_BLOCKED"
+assert block_verified("4821") == "CARD_NOT_FOUND", "Budi's card: not this session's customer"
+for last4 in active:  # a fresh database: both of Agus's cards; a re-run: none left
+    assert block_verified(last4) == "CARD_BLOCKED"
+assert block_verified("7713") == "CARD_ALREADY_BLOCKED"
 assert call("/ivr/sessions/end", {"token": token}) == (200, {"ended": True})
 assert call("/ivr/sessions/end", {"token": token}) == (200, {"ended": False})
-assert block_verified("0000", "1978-11-02") == "SESSION_INVALID", "hung up: the token no longer works"
+assert block_verified("0000") == "SESSION_INVALID", "hung up: the token no longer works"
 clear_attempts(AGUS)
 logs = [r for r in call("/admin/logs")[1] if r["request"].startswith("POST /ivr/")]
 assert logs and all('"pin": "345678"' not in r["request"] and token not in r["request"] for r in logs), logs[:2]

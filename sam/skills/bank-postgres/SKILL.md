@@ -17,7 +17,7 @@ Replace `<callerPhone>` and `<sessionToken>` with the values from the turn.
 | Balance (menu 1) | `SELECT account_no, product, balance, currency, account_status FROM customer_accounts WHERE phone = '<callerPhone>' ORDER BY account_no;` |
 | Last 3 transactions (menu 2) | `SELECT account_no, posted_at, description, channel, amount, direction FROM account_transactions WHERE phone = '<callerPhone>' ORDER BY posted_at DESC LIMIT 3;` |
 | Cards, before blocking (menu 3) | `SELECT card_type, network, card_last4, card_status FROM customer_cards WHERE phone = '<callerPhone>';` |
-| Block a card | `SELECT * FROM block_card_verified('<sessionToken>', '<last4>', '<YYYY-MM-DD>', 'LOST');` |
+| Block a card | `SELECT * FROM block_card_verified('<sessionToken>', '<last4>', 'LOST');` |
 
 **How to work a turn:**
 1. Call the database tool with the query. It must be a real tool call; never write the query or the call into your answer as text.
@@ -35,7 +35,7 @@ The phone line verified the caller before the call reached you. They entered the
 - `customerName`: their name;
 - `sessionToken`: proof of this verified call.
 
-**Never ask for the PIN**, and never re-verify the caller. Only card blocking needs one more check: the date of birth.
+**Never ask for the PIN, the date of birth or anything else to verify the caller.** Balances and transactions need nothing more, and blocking a card needs only the card's last 4 digits.
 
 ## Rules
 
@@ -45,8 +45,7 @@ The phone line verified the caller before the call reached you. They entered the
 4. **One query is usually enough.** Use the matching quick query above (others are in `references/queries.md`). Do not explore the schema or the system catalogs.
 5. **Put only validated values into SQL.** Apart from `callerPhone` and `sessionToken`, the only caller-supplied values you ever put in a query are:
    - an account number: exactly 10 digits;
-   - card last four digits: exactly 4 digits;
-   - a date of birth: a real date, written as `'YYYY-MM-DD'`.
+   - card last four digits: exactly 4 digits.
 
    If the value doesn't match, ask again instead of querying. Never put any other caller wording into SQL.
 6. **Keep secrets.** Never ask for a PIN or a full card number (only the last four digits exist), never read out the `sessionToken`, and don't read out internal codes such as `cif`.
@@ -62,7 +61,7 @@ The phone line verified the caller before the call reached you. They entered the
 | Their accounts (types, numbers, status) | `customer_accounts` |
 | Last 3 transactions (menu 2), a specific payment, spending by channel | `account_transactions` |
 | Their cards and whether a card is blocked | `customer_cards` |
-| Block a lost or stolen card (menu 3) | `block_card_verified(...)`: needs the card's last 4 digits and the date of birth |
+| Block a lost or stolen card (menu 3) | `block_card_verified(...)`: needs only the card's last 4 digits |
 
 A turn with `inputType` `"menu"` is a keypad menu choice; its `text` names the request, for example "Balance inquiry".
 
@@ -84,7 +83,7 @@ Anything else (opening accounts, loans, transfers, changing a PIN, branch hours)
   - `expiry` is text, `MM/YY`.
   - `card_status` is `ACTIVE` or `BLOCKED`.
   - `account_no` is null for credit cards.
-- **`block_card_verified(p_token, p_card_last4, p_dob, p_reason DEFAULT 'LOST')`**: returns one row `(success boolean, reference text, message text)`. The token decides whose cards these are, so it can only ever block this caller's own card.
+- **`block_card_verified(p_token, p_card_last4, p_reason DEFAULT 'LOST')`**: returns one row `(success boolean, reference text, message text)`. The token decides whose cards these are, so it can only ever block this caller's own card.
 
 All three views join the same customer, so `phone` (and `cif`) mean the same customer in each. `account_no` links a transaction or a debit card to its account.
 
@@ -96,24 +95,21 @@ All three views join the same customer, so `phone` (and `cif`) mean the same cus
    ```
    - If there is more than one, ask which card (by type and last four digits).
    - If there is exactly one, name it and confirm it with the caller.
-2. **Ask for their date of birth.** They may say it or type it on the keypad (for example `12031985` for 12 March 1985). Turn it into `'YYYY-MM-DD'`. Do not ask for the PIN.
-3. **Call the function once:**
+2. **Once you know the card's last 4 digits, call the function once.** Don't ask for a date of birth, a PIN or anything else.
    ```sql
-   SELECT * FROM block_card_verified('<sessionToken>', '<last4>', '<YYYY-MM-DD>', 'LOST');
+   SELECT * FROM block_card_verified('<sessionToken>', '<last4>', 'LOST');
    ```
    Use `'STOLEN'` as the reason if the caller says it was stolen.
-4. **Answer from `message`:**
+3. **Answer from `message`:**
 
    | message | Tell the caller |
    |---|---|
    | `CARD_BLOCKED` | The card is blocked. Read out `reference` (e.g. `BLK-20260928-A1B2C3`) slowly, character by character. |
-   | `IDENTITY_VERIFICATION_FAILED` | The date of birth didn't match. They may try again. |
-   | `VERIFICATION_LOCKED` | Too many wrong attempts. Verification is locked for 15 minutes; offer a customer service officer. |
    | `CARD_NOT_FOUND` | No card with those last four digits on their number. |
    | `CARD_ALREADY_BLOCKED` | That card is already blocked. |
    | `SESSION_INVALID` | The call's verification has ended. Ask them to call again. |
 
-   Three wrong attempts within 15 minutes lock the number, so never call it with guessed values.
+   Never call it with guessed digits; ask the caller if you aren't sure which card.
 
 ## Speaking the results
 

@@ -113,9 +113,8 @@ The voice pipe checks the caller once, at the start of the call, then hands the 
    - `200` returns `{"token", "full_name"}`.
    - Failures are `404 CUSTOMER_NOT_FOUND` (number not registered), `401 IDENTITY_VERIFICATION_FAILED` or `423 VERIFICATION_LOCKED`.
 2. The token (64 hex characters) goes to SAM with every turn as `sessionToken`. SAM never asks for the PIN.
-3. To block a card, SAM calls `block_card_verified(token, card_last4, date_of_birth)` through the DB connector.
+3. To block a card, SAM calls `block_card_verified(token, card_last4)` through the DB connector. Nothing else is asked: the caller entered their PIN at the start of the call.
    - The session decides whose cards these are, so SAM can only block the caller's own card.
-   - A wrong date of birth counts towards the lockout.
 4. `POST /ivr/sessions/end` `{"token": ...}` at hang-up. After that, or after 30 minutes, the token returns `SESSION_INVALID`.
 
 These endpoints are for the voice pipe, so they're hidden from the OpenAPI spec. The **ivr sessions** tab shows each session and whether it's active. The call log shows PINs and tokens masked.
@@ -389,7 +388,6 @@ From a code review on 2026-09-28. None of these is fixed yet.
 - **"Only the caller's data" is enforced by instructions, not by the database.** `sam_agent` can still read every customer's rows from the three views, and can still call the old `block_card(phone, dob, pin)`. The planned fix, read functions keyed by the session token (`my_accounts(token)` etc.), is deferred.
 - **Registered numbers can be discovered.** `/ivr/sessions` and `GET /customers/by-phone/{phone}` answer differently for registered and unregistered numbers.
 - **Old rows pile up.** `ivr_sessions` and `verification_attempts` are never cleaned up.
-- **One lockout counts both kinds of failure.** A wrong date of birth in `block_card_verified` counts against the same limit as a wrong PIN, so three bad dates of birth also block the caller's next PIN verification for 15 minutes.
 - **The call log over-masks.** It hides every quoted 6-digit value in SQL, which catches amounts such as `'150000'` as well as PINs.
 - **Option B is unused.** The REST toolset (`sam/toolset/bank_tools.py`, `Bank-tools-python.zip`, and the agent endpoints it calls) isn't used by the current setup. Its `block_card` still asks for the PIN, which doesn't fit the verified-call flow.
 - **The smoke test changes data.** It blocks real cards every time it runs on fresh data (Rina's `4408`, Agus's cards), so re-running it leaves them blocked.

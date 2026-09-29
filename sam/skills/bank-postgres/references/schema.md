@@ -18,7 +18,7 @@ customers 1 ──< ivr_sessions (one per verified call; token = sessionToken)
 - An **account** has many **transactions**.
 - A **card** belongs to a customer. A debit card is also linked to one account; a credit card has no account.
 - Each successful card block writes a **card_block_requests** row with a unique `reference`.
-- Every identity check (the PIN at the start of the call, the date of birth when blocking) writes a **verification_attempts** row, which drives the lockout.
+- Every PIN check at the start of a call writes a **verification_attempts** row, which drives the lockout.
 - Each verified call has one **ivr_sessions** row: its `token` is the `sessionToken` you are given.
 
 ## Views (what sam_agent can read)
@@ -72,7 +72,7 @@ Source: `cards JOIN customers LEFT JOIN accounts`.
 ## Function (what sam_agent can call)
 
 ```sql
-block_card_verified(p_token text, p_card_last4 text, p_dob date, p_reason text DEFAULT 'LOST')
+block_card_verified(p_token text, p_card_last4 text, p_reason text DEFAULT 'LOST')
 RETURNS TABLE (success boolean, reference text, message text)
 ```
 
@@ -80,17 +80,13 @@ RETURNS TABLE (success boolean, reference text, message text)
 
 What it does, in order:
 1. **Session check.** The token must belong to a call that is still open, otherwise it returns `SESSION_INVALID`. The session decides the customer, so only that customer's cards can be blocked.
-2. **Lockout check.** If the customer's phone has 3 or more `FAILED` verification attempts in the last 15 minutes since its last success, it records `LOCKED` and returns `VERIFICATION_LOCKED`.
-3. **Date of birth.** It must match the customer's. On a mismatch it records `FAILED` and returns `IDENTITY_VERIFICATION_FAILED`. No PIN is needed: the caller entered it at the start of the call.
-4. **Card lookup.** It finds the card by `(customer, card_last4)`: `CARD_NOT_FOUND`, or `CARD_ALREADY_BLOCKED` if it is already blocked.
-5. **Block.** It sets the card to `BLOCKED` with `blocked_at` and `block_reason`, writes `card_block_requests` with reference `BLK-YYYYMMDD-XXXXXX`, and returns `(true, reference, 'CARD_BLOCKED')`.
+2. **Card lookup.** No PIN or date of birth is needed: the caller entered their PIN at the start of the call. It finds the card by `(customer, card_last4)`: `CARD_NOT_FOUND`, or `CARD_ALREADY_BLOCKED` if it is already blocked.
+3. **Block.** It sets the card to `BLOCKED` with `blocked_at` and `block_reason`, writes `card_block_requests` with reference `BLK-YYYYMMDD-XXXXXX`, and returns `(true, reference, 'CARD_BLOCKED')`.
 
 | success | reference | message |
 |---|---|---|
 | true | `BLK-...` | `CARD_BLOCKED` |
 | false | null | `SESSION_INVALID` |
-| false | null | `IDENTITY_VERIFICATION_FAILED` |
-| false | null | `VERIFICATION_LOCKED` |
 | false | null | `CARD_NOT_FOUND` |
 | false | null | `CARD_ALREADY_BLOCKED` |
 
