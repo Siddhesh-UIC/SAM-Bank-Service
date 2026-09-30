@@ -1,27 +1,22 @@
 # SAM Bank Service
 
-Mock core-banking backend for the **Bahasa Indonesia IVR Speech AI** PoC. It demonstrates how a
-Solace Agent Mesh (SAM) agent gets customer data from a bank backend, and covers the three PoC intents:
+Mock core-banking backend for the **Indo Bank voice IVR** PoC. A Solace Agent Mesh (SAM) agent answers
+verified phone callers from this database. It covers three requests:
 
-1. Balance enquiry (read)
-2. Recent transactions (read)
-3. Card block (write, gated by identity verification)
-
-The agent can be wired to the backend **two ways**. Both hit the same data and the same verification rule:
-
-| Option | SAM component | Talks to |
-|---|---|---|
-| **A. Direct database** | PostgreSQL connector | Postgres views + `block_card()` function |
-| **B. REST API** | Python toolset (`sam/toolset`) | FastAPI service → Postgres |
+1. **Balance enquiry** (read).
+2. **Recent transactions** (read).
+3. **Card block** (write). Only for a verified call, and only the caller's own card.
 
 ```mermaid
 graph LR
-    Caller([Caller / SAM chat]) --> Agent[BankAssistantAgent]
-    Agent -- "A: SQL (sam_agent role)" --> PG[(Postgres :5432)]
-    Agent -- "B: toolset → HTTP" --> API[FastAPI :8000]
+    Voice[Voice pipe] -- "PIN check, session token" --> API[Bank service :8000]
+    Voice -- "turns over Solace" --> Agent[SAM Bank-DB-Agent]
+    Agent -- "SQL via PostgreSQL connector (sam_agent)" --> PG[(Postgres :5432)]
     API --> PG
     UI[Data viewer UI, same :8000 service] --> API
 ```
+
+**Setting up SAM** (connector, skill, agent, event rule): see **[SAM_SETUP.md](SAM_SETUP.md)**.
 
 ---
 
@@ -47,7 +42,6 @@ serves the UI page at `/` and the API routes next to it. Postgres is the only ot
 |---|---|
 | http://127.0.0.1:8000 | Data viewer UI: browse, add and delete test records |
 | http://127.0.0.1:8000/docs | Swagger UI: try every API endpoint in the browser |
-| http://127.0.0.1:8000/openapi.json | OpenAPI spec (for an OpenAPI connector) |
 | `127.0.0.1:5432` | Postgres, for SAM's PostgreSQL connector or any SQL client |
 
 > **Use `127.0.0.1`, not `localhost`, on Windows.** `localhost` tries IPv6 first, and Docker Desktop
@@ -66,8 +60,7 @@ In the UI, pick a table tab:
   Deleting a transaction reverses its effect on the balance.
 - Errors from the database (duplicate CIF, bad status value, unknown account_no, and so on) show next to the buttons.
 
-These admin routes are for testing only. They're hidden from `/openapi.json`, so an agent wired
-through an OpenAPI connector never sees them.
+These admin routes are for testing only, and they're hidden from `/openapi.json`.
 
 ### Call log: what did the agent actually do?
 
@@ -241,136 +234,25 @@ curl -X POST http://127.0.0.1:8000/cards/block -H "Content-Type: application/jso
 
 ---
 
-## Option A — Connect SAM to the database
+## Connect SAM
 
-**SAM Desktop → Builder → Connectors → Create Connector → Apps → PostgreSQL**
+SAM reads this database directly through its **PostgreSQL connector**, logging in as `sam_agent`. That login can only read the three views and call `block_card_verified`. The `bank-postgres` skill (`sam/skills/bank-postgres`, packaged as `sam/bank-postgres.zip`) gives the agent the exact SQL.
 
-| Field | Value |
-|---|---|
-| Connector Name | `Bank Core Database` |
-| Description | `Mock core banking: customer accounts, balances, transactions and cards. Read via views customer_accounts, account_transactions, customer_cards; block cards only via block_card().` |
-| Database Name | `bank` |
-| Database Hostname | `127.0.0.1` |
-| Port | `5432` |
-| Username | `sam_agent` |
-| Password | `sam_agent123` |
+The full step-by-step setup is in **[SAM_SETUP.md](SAM_SETUP.md)**:
+1. connector settings (database, host, port, user);
+2. building and uploading the skill;
+3. the model's token limit;
+4. the agent's details, instructions (compressed and detailed), connector, skill and toolsets;
+5. the Solace event rule with its schemas;
+6. how to check it works.
 
-`sam_agent` is least-privilege: SELECT on the three views plus EXECUTE on `block_card()`, and nothing else.
-
-### Skill: teach the agent the database
-
-Left to itself, the agent guesses the SQL. For example, it once joined on `customer_id`, which the views don't have. The skill [`sam/skills/bank-postgres`](sam/skills/bank-postgres/SKILL.md) gives it what it needs:
-
-- a tested query for each request: balance, last 3 transactions, cards, and `block_card_verified` with its result codes;
-- the three views' columns and their allowed values;
-- the rules: always filter by the caller's phone, make real tool calls, only card digits go into SQL, retry once on a wrong column.
-
-**It's kept short on purpose (about 3 KB).** SAM adds a loaded skill to the model's prompt, and Qwen's limit is 16,384 tokens for the prompt and reply together. The earlier 19.5 KB version, with two reference files, pushed every voice turn over that limit as soon as it loaded ("context too large to compact — single oversized turn" in SAM's log). Keep additions small. The full schema is under [Data model](#data-model).
-
-With the SAM CLI, from the `sam` folder. SAM Desktop installs the CLI at `%LOCALAPPDATA%\Programs\Solace Agent Mesh\cli\sam.exe`:
-
-```powershell
-cd sam
-sam skill validate bank-postgres
-$env:SAM_TOOL_TARGET_OS="windows"; $env:SAM_TOOL_TARGET_ARCH="amd64"; $env:SAM_TOOL_PYTHON_VERSION="3.14"
-sam skill package bank-postgres
-```
-
-This writes `sam/bank-postgres.zip` (git-ignored). Upload it in SAM (Skills → Upload skill) and add the skill to the bank agent. The skill has no bundled tools; it works with the PostgreSQL connector above.
-
-## Option B — Connect SAM through the REST API (toolset)
-
-1. Zip the toolset:
-   ```powershell
-   Compress-Archive -Force sam/toolset/* Bank-tools-python.zip
-   ```
-2. **SAM Desktop → Builder → Toolsets → + Create Toolset**
-   - **Name:** `bank-tools`
-   - **Description:** `Bank backend tools: customer lookup, balances, recent transactions, cards and verified card block.`
-   - **Tools:** upload `Bank-tools-python.zip`
-3. Confirm the 5 tools show as **Ready**: `get_customer`, `get_balances`, `get_recent_transactions`, `get_cards`, `block_card`.
-
-The toolset calls `http://127.0.0.1:8000` by default. Set the `BANK_API_URL` env var to point it somewhere else.
-
-> If your SAM build has an **OpenAPI connector**, you can point it at `http://127.0.0.1:8000/openapi.json` instead of using the toolset. The operationIds above become the tool names.
-
----
-
-## Create the agent
-
-**SAM Desktop → Builder → Agent Management → Add Agent → Create New Agent → Create Manually**
-
-- **Name:** `BankAssistantAgent`
-- **Description:** `Bahasa Indonesia phone-banking assistant: balance enquiry, recent transactions and card blocking with identity verification.`
-- **Connectors / Toolset:** `Bank Core Database` (option A) **or** the `bank-tools` toolset (option B)
-
-<details>
-<summary><strong>Instructions</strong></summary>
-
-```
-You are "Asisten Bank", a phone-banking assistant for an Indonesian bank.
-Always reply in natural, polite Bahasa Indonesia (use "Bapak/Ibu"). Keep replies short —
-they will be spoken aloud by a TTS engine.
-
-The caller's phone number (caller ID) is given in the message. Use it to identify the customer.
-
-SUPPORTED REQUESTS (nothing else — offer to transfer to a human agent otherwise):
-1. Cek saldo (balance enquiry)
-2. Mutasi / transaksi terakhir (recent transactions, default 5)
-3. Blokir kartu (card block)
-
-HARD RULES:
-- Only state facts returned by a tool/query in THIS conversation. Never guess or invent
-  balances, transactions, card numbers or reference numbers.
-- Amounts are IDR. Say them in words-friendly form, e.g. "Rp 1.250.000" (satu juta dua ratus lima puluh ribu rupiah).
-- Refer to cards and accounts only by their last 4 digits.
-- Card block requires identity verification: ask for the caller's date of birth AND 6-digit PIN
-  BEFORE calling block_card. Confirm which card (last 4 digits) and the reason (hilang/dicuri/penipuan).
-- Never repeat the PIN back to the caller, and never reveal why verification failed in detail.
-- If verification fails, allow one retry, then offer a human agent.
-- If the result is VERIFICATION_LOCKED, do not ask for the PIN again. Say that phone verification
-  is temporarily locked for security and offer a human agent.
-- After a successful block, read out the reference number.
-
-IF USING THE DATABASE CONNECTOR ("Bank Core Database"):
-- Query ONLY these views: customer_accounts, account_transactions, customer_cards.
-- Balance:      SELECT account_no, product, balance, account_status FROM customer_accounts WHERE phone = '<PHONE>';
-- Transactions: SELECT posted_at, description, amount, direction FROM account_transactions
-                WHERE account_no = '<ACCOUNT_NO>' ORDER BY posted_at DESC LIMIT 5;
-- Cards:        SELECT card_type, network, card_last4, card_status FROM customer_cards WHERE phone = '<PHONE>';
-- Block:        SELECT * FROM block_card('<PHONE>', '<YYYY-MM-DD>', '<PIN>', '<LAST4>', '<LOST|STOLEN|SUSPECTED_FRAUD>');
-
-IF USING THE TOOLSET ("bank-tools"):
-- get_balances(phone), get_recent_transactions(account_no, limit), get_cards(phone),
-  block_card(phone, date_of_birth, pin, card_last4, reason).
-```
-
-</details>
-
-### Test prompts
-
-```
-@BankAssistantAgent [caller: +6281234567801] Halo, saya mau cek saldo tabungan saya.
-```
-```
-@BankAssistantAgent [caller: +6281234567803] Tolong sebutin 5 transaksi terakhir di rekening tabungan saya dong.
-```
-```
-@BankAssistantAgent [caller: +6281234567802] Kartu debit saya hilang, tolong diblokir. Tanggal lahir saya 25 Juli 1990, PIN 234567.
-```
-```
-@BankAssistantAgent [caller: +6281234567805] Kartu saya yang 6642 tolong diblokir ya.
-```
-(The last one should come back as already blocked.)
-
-Open http://127.0.0.1:8000 → **cards** / **card block requests** to confirm what the agent changed.
+**Keep the skill small** (about 3 KB). SAM adds a loaded skill to the model's prompt, and Qwen's limit is 16,384 tokens for the prompt and reply together. The earlier 19.5 KB version made every voice turn fail ("context too large to compact — single oversized turn" in SAM's log). The full schema is under [Data model](#data-model).
 
 ---
 
 ## Not included (on purpose, for now)
 
-- **Solace event backbone.** SAM calls the backend directly here. The plan's request/reply over topics
-  (`bank/account/{id}/balance/request`) comes in build step 8.
+- **REST tools for SAM.** `sam/toolset/bank_tools.py` and the agent endpoints under [API endpoints](#api-endpoints) are an alternative route that isn't used now. The current setup uses the PostgreSQL connector only.
 - **mTLS / API auth.** The API is unauthenticated and meant for local demos only.
 
 ## Known issues and limits
@@ -387,7 +269,7 @@ From a code review on 2026-09-28. None of these is fixed yet.
 - **Registered numbers can be discovered.** `/ivr/sessions` and `GET /customers/by-phone/{phone}` answer differently for registered and unregistered numbers.
 - **Old rows pile up.** `ivr_sessions` and `verification_attempts` are never cleaned up.
 - **The call log over-masks.** It hides every quoted 6-digit value in SQL, which catches amounts such as `'150000'` as well as PINs.
-- **Option B is unused.** The REST toolset (`sam/toolset/bank_tools.py`, `Bank-tools-python.zip`, and the agent endpoints it calls) isn't used by the current setup. Its `block_card` still asks for the PIN, which doesn't fit the verified-call flow.
+- **The REST toolset is unused.** (`sam/toolset/bank_tools.py`, `Bank-tools-python.zip`, and the agent endpoints it calls) isn't used by the current setup. Its `block_card` still asks for the PIN, which doesn't fit the verified-call flow.
 - **The smoke test changes data.** It blocks real cards every time it runs on fresh data (Rina's `4408`, Agus's cards), so re-running it leaves them blocked.
 - The API opens one database connection per request.
 - **Line-ending churn in the history.** Commit `5c8e7f1` rewrote whole files (`api/main.py`, `bank_tools.py`, `tests/smoke_test.py`), so their diffs show every line changed.
