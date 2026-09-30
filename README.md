@@ -269,7 +269,7 @@ From a code review on 2026-09-28. None of these is fixed yet.
 - **Registered numbers can be discovered.** `/ivr/sessions` and `GET /customers/by-phone/{phone}` answer differently for registered and unregistered numbers.
 - **Old rows pile up.** `ivr_sessions` and `verification_attempts` are never cleaned up.
 - **The call log over-masks.** It hides every quoted 6-digit value in SQL, which catches amounts such as `'150000'` as well as PINs.
-- **The REST toolset is unused.** (`sam/toolset/bank_tools.py`, `Bank-tools-python.zip`, and the agent endpoints it calls) isn't used by the current setup. Its `block_card` still asks for the PIN, which doesn't fit the verified-call flow.
+- **The REST toolset is unused.** `sam/toolset/bank_tools.py`, `Bank-tools-python.zip` and the agent endpoints they call aren't part of the current setup. Its `block_card` still asks for the PIN, which doesn't fit the verified-call flow.
 - **The smoke test changes data.** It blocks real cards every time it runs on fresh data (Rina's `4408`, Agus's cards), so re-running it leaves them blocked.
 - The API opens one database connection per request.
 - **Line-ending churn in the history.** Commit `5c8e7f1` rewrote whole files (`api/main.py`, `bank_tools.py`, `tests/smoke_test.py`), so their diffs show every line changed.
